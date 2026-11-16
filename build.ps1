@@ -27,5 +27,9 @@ if($Test) {
     if($LASTEXITCODE -ne 0) { throw 'Frontend test compilation failed.' }
     & $testExe
     if($LASTEXITCODE -ne 0) { throw 'Frontend input tests failed.' }
+    $uiReport=Join-Path $testBin 'ui-state.txt'
+    $uiTest=Start-Process -FilePath $exe -ArgumentList @('--ui-self-test',('"'+$uiReport+'"')) -WindowStyle Hidden -PassThru
+    if(-not $uiTest.WaitForExit(15000) -or $uiTest.ExitCode -ne 0 -or (Get-Content $uiReport -Raw).Trim() -ne 'passed') { throw 'UI state regression checks failed.' }
+    'PASS: main screen has no input fields; start, wait, stop and recovery states are consistent.'
 }
 Write-Output $exe

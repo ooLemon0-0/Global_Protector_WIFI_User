@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Global Protector WiFi")]
 [assembly: AssemblyDescription("Independent GlobalProtect split-routing companion")]
-[assembly: AssemblyVersion("0.1.2.0")]
-[assembly: AssemblyFileVersion("0.1.2.0")]
+[assembly: AssemblyVersion("0.2.0.0")]
+[assembly: AssemblyFileVersion("0.2.0.0")]
 namespace GlobalProtectorWiFi {
     internal static class Program {
         internal const string DefaultTarget = "10.213.134.31";
@@ -26,13 +26,17 @@ namespace GlobalProtectorWiFi {
         internal static bool Admin { get { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); } }
         [STAThread] static int Main(string[] args) {
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
-            if(args.Length==2 && args[0]=="--render-preview") {
+            if((args.Length==2 || args.Length==3) && args[0]=="--render-preview") {
                 using(var form=new MainForm(false,true,false)) {
-                    form.Show(); Application.DoEvents();
+                    form.Show(); if(args.Length==3)form.PreviewState(args[2]); Application.DoEvents();
                     using(var bitmap=new Bitmap(form.Width,form.Height)) { form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size)); bitmap.Save(args[1],System.Drawing.Imaging.ImageFormat.Png); }
                     form.Hide();
                 }
                 return 0;
+            }
+            if(args.Length==2 && args[0]=="--ui-self-test") {
+                try {using(var form=new MainForm(false,true,false)){bool ok=form.CheckMainUi();File.WriteAllText(args[1],ok?"passed":"failed");return ok?0:1;}}
+                catch(Exception e){File.WriteAllText(args[1],e.ToString());return 1;}
             }
             using (var mutex = new Mutex(false, "Local\\GlobalProtectorWiFi-" + WindowsIdentity.GetCurrent().User.Value)) {
                 bool acquired = false;
@@ -65,114 +69,172 @@ namespace GlobalProtectorWiFi {
     public static class Lifecycle {
         public static bool ShouldRearm(bool armed,bool stopping,bool error,bool pending) { return armed && !stopping && !error && !pending; }
     }
-    internal sealed class Card : Panel {
-        internal Color Surface = Color.White;
-        internal Card() { DoubleBuffered = true; BackColor = Color.Transparent; Padding = new Padding(20); }
-        protected override void OnPaint(PaintEventArgs e) {
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Rectangle r = new Rectangle(0, 0, Width - 1, Height - 1);
-            using (GraphicsPath p = Round(r, 16)) using (var b = new SolidBrush(Surface)) using (var pen = new Pen(Color.FromArgb(226, 232, 236))) { e.Graphics.FillPath(b, p); e.Graphics.DrawPath(pen, p); }
-            base.OnPaint(e);
+    internal sealed class SoftButton : Button {
+        bool hover;
+        internal SoftButton(){SetStyle(ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer,true);}
+        protected override void OnMouseEnter(EventArgs e){hover=true;Invalidate();base.OnMouseEnter(e);}
+        protected override void OnMouseLeave(EventArgs e){hover=false;Invalidate();base.OnMouseLeave(e);}
+        protected override void OnPaint(PaintEventArgs e){
+            e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;
+            var r=new Rectangle(0,0,Width-1,Height-1);var p=new GraphicsPath();int d=18;
+            p.AddArc(r.X,r.Y,d,d,180,90);p.AddArc(r.Right-d,r.Y,d,d,270,90);p.AddArc(r.Right-d,r.Bottom-d,d,d,0,90);p.AddArc(r.X,r.Bottom-d,d,d,90,90);p.CloseFigure();
+            Color fill=Enabled?BackColor:Color.FromArgb(223,230,234);
+            if(Enabled && hover)fill=ControlPaint.Light(fill,0.08F);
+            using(p)using(var b=new SolidBrush(fill))using(var pen=new Pen(FlatAppearance.BorderColor)){e.Graphics.FillPath(b,p);if(FlatAppearance.BorderSize>0)e.Graphics.DrawPath(pen,p);}
+            TextRenderer.DrawText(e.Graphics,Text,Font,ClientRectangle,Enabled?ForeColor:Color.FromArgb(129,144,153),TextFormatFlags.HorizontalCenter|TextFormatFlags.VerticalCenter);
+            if(Focused && ShowFocusCues)ControlPaint.DrawFocusRectangle(e.Graphics,new Rectangle(5,5,Width-10,Height-10),ForeColor,fill);
         }
-        static GraphicsPath Round(Rectangle r, int d) { var p = new GraphicsPath(); p.AddArc(r.X,r.Y,d,d,180,90); p.AddArc(r.Right-d,r.Y,d,d,270,90); p.AddArc(r.Right-d,r.Bottom-d,d,d,0,90); p.AddArc(r.X,r.Bottom-d,d,d,90,90); p.CloseFigure(); return p; }
+    }
+    internal sealed class WifiMark : Control {
+        internal Color Tint=Color.FromArgb(13,125,113);
+        internal WifiMark(){SetStyle(ControlStyles.SupportsTransparentBackColor|ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer,true);BackColor=Color.Transparent;}
+        protected override void OnPaint(PaintEventArgs e){
+            e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;e.Graphics.ScaleTransform(Width/72F,Height/72F);
+            using(var b=new SolidBrush(Color.FromArgb(231,245,240)))e.Graphics.FillEllipse(b,0,0,71,71);
+            using(var p=new Pen(Tint,3.5F)){p.StartCap=LineCap.Round;p.EndCap=LineCap.Round;e.Graphics.DrawArc(p,17,20,38,30,205,130);e.Graphics.DrawArc(p,25,30,22,18,210,120);}
+            using(var b=new SolidBrush(Tint))e.Graphics.FillEllipse(b,33,43,6,6);
+        }
     }
     internal sealed class MainForm : Form {
         readonly Color ink = Color.FromArgb(28, 45, 57), muted = Color.FromArgb(99, 116, 128), accent = Color.FromArgb(13, 125, 113);
         readonly bool demo, autoStart;
         readonly TextBox targets = new TextBox(), manualDns = new TextBox(), log = new TextBox();
         readonly CheckBox dnsMode = new CheckBox();
-        readonly Label stateTitle = new Label(), stateDetail = new Label(), badge = new Label(), checks = new Label();
-        readonly Button start = new Button(), restore = new Button(), vpn = new Button();
+        readonly Label stateTitle = new Label();
+        readonly Button start = new SoftButton(), restore = new Button(), vpn = new Button();
         readonly CheckBox autoOpen = new CheckBox();
         bool armed, openedVpn; System.Windows.Forms.Timer reconnectTimer;
         readonly NotifyIcon tray = new NotifyIcon();
         Process worker; bool running, stopping, quitWhenStopped, allowClose, hadError;
         string lastError = "";
+        readonly Button settingsButton = new Button();
+
+        readonly WifiMark heroMark = new WifiMark();
+        TextBox visibleLog;
+        bool recoveryNeeded;
         public MainForm(bool auto, bool preview, bool recover) {
-            autoStart = auto; demo = preview;
-            Text = "Global Protector · Wi-Fi 分流助手"; ClientSize = new Size(790, 736); MinimumSize = new Size(806, 775);
-            StartPosition = FormStartPosition.CenterScreen; BackColor = Color.FromArgb(245, 248, 250);
-            Font = new Font("Microsoft YaHei UI", 9F); ForeColor = ink; AutoScaleMode = AutoScaleMode.Dpi;
-            Icon = CreateIcon();
-            var layout = new TableLayoutPanel { Dock = DockStyle.Fill, Padding = new Padding(26, 18, 26, 12), ColumnCount = 1, RowCount = 7 };
-            foreach (int height in new[] { 75, 141, 199, 55, 118, 62, 28 }) layout.RowStyles.Add(new RowStyle(SizeType.Absolute, height));
-            Controls.Add(layout);
-            var header = new Panel { Dock = DockStyle.Fill };
-            var logo = new Label { Text = "G", Font = new Font("Segoe UI", 25, FontStyle.Bold), ForeColor = Color.White, BackColor = accent, TextAlign = ContentAlignment.MiddleCenter, Bounds = new Rectangle(0, 5, 52, 52) };
-            header.Controls.Add(logo);
-            header.Controls.Add(LabelAt("Global Protector", 68, 3, 400, 30, 19, true));
-            header.Controls.Add(LabelAt("VPN 内网与日常上网，各走其路。", 70, 38, 440, 24, 10, false));
-            var version = LabelAt("v0.1.2", 620, 14, 90, 25, 9, false); version.TextAlign = ContentAlignment.MiddleRight; version.Anchor = AnchorStyles.Top | AnchorStyles.Right; header.Controls.Add(version);
-            layout.Controls.Add(header, 0, 0);
-            var status = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12), Surface = Color.FromArgb(235, 246, 243) };
-            badge.SetBounds(20, 17, 620, 20); badge.Font = new Font(Font, FontStyle.Bold); badge.ForeColor = accent;
-            stateTitle.SetBounds(20, 44, 660, 32); stateTitle.Font = new Font("Microsoft YaHei UI", 15, FontStyle.Bold);
-            stateDetail.SetBounds(20, 83, 680, 37); stateDetail.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right; stateDetail.ForeColor = muted;
-            status.Controls.AddRange(new Control[] { badge, stateTitle, stateDetail }); layout.Controls.Add(status, 0, 1);
-            var settings = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12) };
-            settings.Controls.Add(LabelAt("VPN 内网目标 IP", 20, 14, 250, 24, 10, true));
-            targets.Multiline = true; targets.ScrollBars = ScrollBars.Vertical; targets.SetBounds(20, 44, 415, 66); targets.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right; targets.Font = new Font("Consolas", 11); targets.AccessibleName = "VPN 内网目标 IPv4 地址";
-            settings.Controls.Add(targets);
-            settings.Controls.Add(LabelAt("已预设分流目标，通常无需修改；其他目标可用逗号或换行添加。", 20, 115, 660, 23, 8.5F, false));
-            settings.Controls.Add(LabelAt("DNS", 20, 147, 45, 26, 9, true));
-            dnsMode.Text = "自动选择 VPN 可用 DNS"; dnsMode.Checked = true; dnsMode.SetBounds(65, 144, 245, 28); dnsMode.AccessibleName = "DNS 选择方式";
-            manualDns.SetBounds(325, 144, 190, 28); manualDns.Font = new Font("Consolas", 10); manualDns.Enabled = false; manualDns.AccessibleName = "指定 VPN DNS 地址";
-            dnsMode.CheckedChanged += delegate { manualDns.Enabled = !dnsMode.Checked && !running; };
-            settings.Controls.AddRange(new Control[] { dnsMode, manualDns });
-            vpn.Text = "打开 GlobalProtect"; vpn.SetBounds(465, 47, 232, 40); vpn.Anchor = AnchorStyles.Top | AnchorStyles.Right; Style(vpn, false); vpn.Click += delegate { OpenVpn(); }; settings.Controls.Add(vpn);
-            layout.Controls.Add(settings, 0, 2);
-            var actions = new FlowLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty, WrapContents = false };
-            start.Text = "开启助手"; restore.Text = "停止并恢复";
-            foreach (var b in new[] { start, restore }) { b.Size = new Size(230, 41); b.Margin = new Padding(0, 0, 12, 0); Style(b, b == start); actions.Controls.Add(b); }
-            start.Click += delegate { StartWorker("Start"); }; restore.Click += delegate { StopWorker(false); };
-            restore.Enabled = false; autoOpen.Text="开启后自动打开 VPN"; autoOpen.Checked=true; autoOpen.Size=new Size(230,41); actions.Controls.Add(autoOpen); layout.Controls.Add(actions, 0, 3);
-            var logCard = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 10) };
-            checks.SetBounds(16, 12, 680, 22); checks.Text = "连接状态与恢复记录"; checks.Font = new Font(Font, FontStyle.Bold); logCard.Controls.Add(checks);
-            log.ReadOnly = true; log.Multiline = true; log.ScrollBars = ScrollBars.Vertical; log.BorderStyle = BorderStyle.None; log.BackColor = Color.White; log.ForeColor = muted; log.SetBounds(16, 40, 680, 57); log.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right | AnchorStyles.Bottom; log.AccessibleName = "运行记录"; logCard.Controls.Add(log); layout.Controls.Add(logCard, 0, 4);
-            var note = LabelAt("普通上网保留原网络，所填 IP 和 VPN DNS 经隧道。\r\nVPN 强制 DNS 策略仍可能影响公司内部域名；最小化后请保留助手运行。", 0, 0, 730, 58, 9, false); note.Dock = DockStyle.Fill; layout.Controls.Add(note, 0, 5);
-            var footer = new FlowLayoutPanel { Dock = DockStyle.Fill, Margin = Padding.Empty, WrapContents = false };
-            var logsLink = new LinkLabel { Text = "查看本机日志", AutoSize = true, LinkColor = accent, Margin = new Padding(0, 0, 24, 0) }; logsLink.LinkClicked += delegate { OpenLogs(); };
-            var repoLink = new LinkLabel { Text = "GitHub · 源码与反馈", AutoSize = true, LinkColor = accent }; repoLink.LinkClicked += delegate { Process.Start("https://github.com/ooLemon0-0/Global_Protector_WIFI_User"); };
-            footer.Controls.AddRange(new Control[] { logsLink, repoLink }); layout.Controls.Add(footer, 0, 6);
-            var loginHelp=new LinkLabel {Text="快速登录说明",AutoSize=true,LinkColor=accent,Margin=new Padding(24,0,0,0)};
-            loginHelp.LinkClicked += delegate {MessageBox.Show("助手只负责打开 GlobalProtect。\n\n如需下次免输密码，请由 VPN 管理员启用官方 Save User Credentials 或 SSO。MFA/动态密码仍按公司策略验证。\n\n请在官方客户端登录；助手不保存账号密码。","快速登录",MessageBoxButtons.OK,MessageBoxIcon.Information);};
-            footer.Controls.Add(loginHelp);
-            // Position from the laid-out parent size, rather than anchoring
-            // controls before TableLayoutPanel assigns their initial width.
-            version.Anchor=AnchorStyles.Top|AnchorStyles.Left;
-            stateDetail.Anchor=AnchorStyles.Top|AnchorStyles.Left;
-            targets.Anchor=AnchorStyles.Top|AnchorStyles.Left;
-            vpn.Anchor=AnchorStyles.Top|AnchorStyles.Left;
-            log.Anchor=AnchorStyles.Top|AnchorStyles.Left;
-            header.Resize += delegate { version.Left=Math.Max(0,header.ClientSize.Width-version.Width); };
-            status.Resize += delegate { stateDetail.Width=status.ClientSize.Width-40; stateTitle.Width=stateDetail.Width; };
-            settings.Resize += delegate { vpn.Left=settings.ClientSize.Width-252; targets.Width=Math.Max(200,vpn.Left-40); };
-            logCard.Resize += delegate { log.Width=logCard.ClientSize.Width-32; log.Height=Math.Max(20,logCard.ClientSize.Height-51); };
-            Shown += delegate {
-                version.Left=Math.Max(0,header.ClientSize.Width-version.Width);
-                stateDetail.Width=status.ClientSize.Width-40; stateTitle.Width=stateDetail.Width;
-                vpn.Left=settings.ClientSize.Width-252; targets.Width=Math.Max(200,vpn.Left-40);
-                log.Width=logCard.ClientSize.Width-32; log.Height=Math.Max(20,logCard.ClientSize.Height-51);
-                dnsMode.Refresh();
-            };
-            var menu = new ContextMenuStrip(); menu.Items.Add("显示助手", null, delegate { Show(); WindowState = FormWindowState.Normal; Activate(); }); menu.Items.Add("停止并恢复", null, delegate { StopWorker(false); }); menu.Items.Add("退出并恢复", null, delegate { StopWorker(true); });
-            tray.Icon = Icon; tray.Text = "Global Protector · 就绪"; tray.ContextMenuStrip = menu; tray.DoubleClick += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
-            FormClosing += delegate(object s, FormClosingEventArgs e) { if (!allowClose && (running || armed)) { e.Cancel = true; Hide(); tray.Visible = true; tray.ShowBalloonTip(2000, "助手继续运行", "可在托盘中停止分流或退出并恢复。", ToolTipIcon.Info); } };
-            FormClosed += delegate { tray.Dispose(); };
-            targets.Text=Program.DefaultTarget;
+            autoStart=auto; demo=preview;
+            Text="Global Protector"; ClientSize=new Size(360,300);
+            FormBorderStyle=FormBorderStyle.FixedSingle; MaximizeBox=false;
+            StartPosition=FormStartPosition.CenterScreen; BackColor=Color.White; ForeColor=ink;
+            Font=new Font("Microsoft YaHei UI",9F); AutoScaleDimensions=new SizeF(96,96); AutoScaleMode=AutoScaleMode.Dpi;
+            Icon=CreateIcon();
+            heroMark.SetBounds(144,28,72,72); Controls.Add(heroMark);
+            stateTitle.SetBounds(24,113,312,38); stateTitle.TextAlign=ContentAlignment.MiddleCenter;
+            stateTitle.Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold); Controls.Add(stateTitle);
+            start.SetBounds(24,177,312,44); Style(start,true);start.Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold);
+            start.AccessibleName="启动或停止";
+            start.Click+=delegate {if(recoveryNeeded) StartWorker("Restore"); else if(running || armed) StopWorker(false); else StartWorker("Start");};
+            Controls.Add(start); AcceptButton=start;
+            Controls.Add(new Panel {Bounds=new Rectangle(24,246,312,1),BackColor=Color.FromArgb(233,237,240)});
+            settingsButton.Text="设置";StyleLink(settingsButton);settingsButton.SetBounds(18,258,64,27);settingsButton.Click+=delegate {ShowSettings();};
+            var history=new Button {Text="日志"};StyleLink(history);history.SetBounds(86,258,64,27);history.Click+=delegate {ShowHistory();};
+            Controls.Add(settingsButton);Controls.Add(history);
+            targets.Text=Program.DefaultTarget; dnsMode.Checked=true; autoOpen.Checked=true;
             if(!demo) LoadSettings();
-            SetStatus("就绪", "先开启助手，再连接 VPN", "已配置分流目标，直接点击“开启助手”即可。分流期间可最小化到系统托盘。");
-            Shown += delegate { if (!demo && (autoStart || recover)) BeginInvoke(new Action(delegate { StartWorker(recover?"Restore":"Start"); })); };
+
+            var menu=new ContextMenuStrip();
+            menu.Items.Add("显示助手",null,delegate {Show();WindowState=FormWindowState.Normal;Activate();});
+            menu.Items.Add("停止",null,delegate {StopWorker(false);});
+            menu.Items.Add("退出并恢复",null,delegate {StopWorker(true);});
+            tray.Icon=Icon; tray.Text="Global Protector · 就绪"; tray.ContextMenuStrip=menu;
+            tray.DoubleClick+=delegate {Show();WindowState=FormWindowState.Normal;Activate();};
+            FormClosing+=delegate(object s,FormClosingEventArgs e) {
+                if(!allowClose && (running || armed)) {e.Cancel=true;Hide();tray.Visible=true;tray.ShowBalloonTip(1800,"已最小化到托盘","右键菜单可停止或退出。",ToolTipIcon.Info);}
+            };
+            FormClosed+=delegate {tray.Dispose();};
+            SetStatus("准备就绪");
+            Shown+=delegate {if(!demo && (autoStart || recover)) BeginInvoke(new Action(delegate {StartWorker(recover?"Restore":"Start");}));};
         }
+        void StyleLink(Button button) {
+            button.FlatStyle=FlatStyle.Flat;button.FlatAppearance.BorderSize=0;
+            button.BackColor=BackColor;button.ForeColor=muted;button.Cursor=Cursors.Hand;
+            button.Size=new Size(94,26);button.Margin=new Padding(0,0,6,0);button.TabStop=true;
+        }
+        void RefreshActions() {
+            if(stopping) {start.Text="恢复中";start.Enabled=false;}
+            else if(recoveryNeeded) {start.Text="恢复";start.Enabled=true;}
+            else if(running || armed) {start.Text="停止";start.Enabled=true;}
+            else {start.Text="启动";start.Enabled=true;}
+            settingsButton.Enabled=!running && !armed && !recoveryNeeded;
+        }
+        void ShowSettings() {
+            if(running || armed || recoveryNeeded) return;
+            using(var dialog=new Form {Text="设置",ClientSize=new Size(436,304),FormBorderStyle=FormBorderStyle.FixedDialog,MaximizeBox=false,MinimizeBox=false,StartPosition=FormStartPosition.CenterParent,Font=Font,BackColor=Color.White,Icon=Icon}) {
+                dialog.Controls.Add(LabelAt("目标地址",22,20,390,23,9,true));
+                var editTargets=new TextBox {Multiline=true,Text=targets.Text,Bounds=new Rectangle(22,50,392,65),Font=new Font("Consolas",10)};
+                dialog.Controls.Add(editTargets);
+                var chooseDns=new CheckBox {Text="自动选择 DNS",Checked=dnsMode.Checked,Bounds=new Rectangle(22,139,235,25)};
+                var editDns=new TextBox {Text=manualDns.Text,Bounds=new Rectangle(273,139,140,25),Enabled=!chooseDns.Checked};
+                chooseDns.CheckedChanged+=delegate {editDns.Enabled=!chooseDns.Checked;};
+                var chooseOpen=new CheckBox {Text="自动打开 GlobalProtect",Checked=autoOpen.Checked,Bounds=new Rectangle(22,180,392,28)};
+                dialog.Controls.AddRange(new Control[]{chooseDns,editDns,chooseOpen});
+                var cancel=new SoftButton {Text="取消",Bounds=new Rectangle(188,242,105,40),DialogResult=DialogResult.Cancel};Style(cancel,false);
+                var save=new SoftButton {Text="保存",Bounds=new Rectangle(305,242,109,40)};Style(save,true);
+                save.Click+=delegate {
+                    try {
+                        string value=String.IsNullOrWhiteSpace(editTargets.Text)?Program.DefaultTarget:editTargets.Text;
+                        var list=InputRules.Parse(value,false);string selectedDns="";
+                        if(!chooseDns.Checked) {var parsed=InputRules.Parse(editDns.Text,false);if(parsed.Length!=1) throw new ArgumentException("指定 DNS 只需填写一个地址。");selectedDns=parsed[0];}
+                        if(!demo) SaveSettings(list,selectedDns,chooseOpen.Checked);
+                        targets.Text=String.Join(Environment.NewLine,list);manualDns.Text=selectedDns;dnsMode.Checked=chooseDns.Checked;autoOpen.Checked=chooseOpen.Checked;
+                        dialog.DialogResult=DialogResult.OK;
+                    } catch(Exception e) {MessageBox.Show(dialog,e.Message,"请检查设置",MessageBoxButtons.OK,MessageBoxIcon.Information);}
+                };
+                dialog.Controls.AddRange(new Control[]{cancel,save});dialog.AcceptButton=save;dialog.CancelButton=cancel;dialog.ShowDialog(this);
+            }
+        }
+        void ShowHistory() {
+            using(var dialog=new Form {Text="日志",ClientSize=new Size(580,350),StartPosition=FormStartPosition.CenterParent,Font=Font,Icon=Icon}) {
+                var view=new TextBox {Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,Dock=DockStyle.Fill,BorderStyle=BorderStyle.None,BackColor=Color.White,Text=log.Text,Font=new Font("Microsoft YaHei UI",9)};
+                var folder=new Button {Text="打开日志文件夹",Dock=DockStyle.Bottom,Height=38};Style(folder,false);folder.Click+=delegate {OpenLogs();};
+                dialog.Controls.Add(view);dialog.Controls.Add(folder);visibleLog=view;
+                try{dialog.ShowDialog(this);}finally{visibleLog=null;}
+            }
+        }
+        internal void PreviewState(string state) {
+            if(!demo) return;
+            if(state=="ready") {running=true;armed=true;SetStatus("分流正常");}
+            else if(state=="waiting") {running=true;armed=true;SetStatus("等待连接");}
+            else if(state=="error") {hadError=true;recoveryNeeded=true;SetStatus("需要恢复");}
+        }
+        internal bool CheckMainUi() {
+            if(!demo) throw new InvalidOperationException("Read-only UI test required.");
+            bool noInputs=!Descendants(this).Any(c=>c is TextBox || c is CheckBox);
+            bool idle=start.Text=="启动" && start.Enabled && targets.Text==Program.DefaultTarget;
+            PreviewState("waiting");bool wait=start.Text=="停止" && start.Enabled && !settingsButton.Enabled;
+            PreviewState("ready");bool ready=start.Text=="停止" && stateTitle.Text=="已连接";
+            PreviewState("error");bool recovery=start.Text=="恢复" && start.Enabled;
+            return noInputs && idle && wait && ready && recovery;
+        }
+        static IEnumerable<Control> Descendants(Control parent) {foreach(Control c in parent.Controls){yield return c;foreach(var d in Descendants(c)) yield return d;}}
         Label LabelAt(string text, int x, int y, int w, int h, float size, bool bold) { return new Label { Text = text, Bounds = new Rectangle(x,y,w,h), Font = new Font("Microsoft YaHei UI",size,bold?FontStyle.Bold:FontStyle.Regular), ForeColor = bold?ink:muted }; }
         void Style(Button b, bool primary) { b.FlatStyle = FlatStyle.Flat; b.FlatAppearance.BorderColor = primary?accent:Color.FromArgb(214,224,228); b.FlatAppearance.BorderSize = 1; b.BackColor = primary?accent:Color.White; b.ForeColor = primary?Color.White:ink; b.Cursor = Cursors.Hand; b.Font = new Font(Font,FontStyle.Bold); }
         static Icon CreateIcon() { using(var b=new Bitmap(32,32)) using(var g=Graphics.FromImage(b)) { g.SmoothingMode=SmoothingMode.AntiAlias; g.Clear(Color.Transparent); using(var fill=new SolidBrush(Color.FromArgb(13,125,113))) g.FillEllipse(fill,1,1,30,30); using(var f=new Font("Segoe UI",18,FontStyle.Bold)) g.DrawString("G",f,Brushes.White,3,-1); var h=b.GetHicon(); try { return (Icon)Icon.FromHandle(h).Clone(); } finally { DestroyIcon(h); } } }
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
-        void SetStatus(string tag,string title,string detail) { badge.Text = "●  " + tag; stateTitle.Text = title; stateDetail.Text = detail; tray.Text = ("Global Protector · " + tag).Substring(0,Math.Min(63,("Global Protector · " + tag).Length)); }
-        void Append(string message) { log.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + message + Environment.NewLine); }
+        void SetStatus(string tag) {
+
+            string status="未启动";
+            if(tag=="分流正常")status="已连接";
+            else if(tag=="等待连接" || tag=="等待重连")status="等待 VPN";
+            else if(tag=="检查中" || tag=="验证中")status="连接中";
+            else if(tag=="恢复中")status="恢复中";
+            else if(tag=="需要恢复")status="需要恢复";
+            else if(tag=="需要查看" || tag=="未开始" || tag=="已停止" && hadError)status="连接失败";
+            stateTitle.Text=status;
+            bool warning=status=="需要恢复" || status=="连接失败";
+            stateTitle.ForeColor=warning?Color.FromArgb(184,102,35):ink;
+            heroMark.Tint=warning?Color.FromArgb(184,102,35):accent;heroMark.Invalidate();
+            tray.Text="Global Protector · "+status;
+            RefreshActions();
+        }
+        void Append(string message) {
+            log.AppendText(DateTime.Now.ToString("HH:mm:ss")+"  "+message+Environment.NewLine);
+            if(visibleLog!=null && !visibleLog.IsDisposed)visibleLog.Text=log.Text;
+        }
         void LoadSettings() { try { string path=Path.Combine(Program.Root,"settings.json"); if(File.Exists(path)) { var d=Program.Json.Deserialize<Dictionary<string,string>>(File.ReadAllText(path)); targets.Text=d.ContainsKey("targets") && !String.IsNullOrWhiteSpace(d["targets"])?d["targets"]:Program.DefaultTarget; manualDns.Text=d.ContainsKey("dns")?d["dns"]:""; dnsMode.Checked=String.IsNullOrEmpty(manualDns.Text); autoOpen.Checked=!d.ContainsKey("autoOpen") || d["autoOpen"]=="true"; } } catch { targets.Text=Program.DefaultTarget; Append("设置未读取，已使用预设目标。"); } }
-        void SaveSettings(string[] list,string dns) { Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"settings.json"),Program.Json.Serialize(new Dictionary<string,string>{{"targets",String.Join(Environment.NewLine,list)},{"dns",dns},{"autoOpen",autoOpen.Checked?"true":"false"}}),Encoding.UTF8); }
-        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.1.2.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
+        void SaveSettings(string[] list,string dns,bool? open=null) { Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"settings.json"),Program.Json.Serialize(new Dictionary<string,string>{{"targets",String.Join(Environment.NewLine,list)},{"dns",dns},{"autoOpen",(open ?? autoOpen.Checked)?"true":"false"}}),Encoding.UTF8); }
+        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.2.0.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
         void StartWorker(string mode, bool resume = false) {
             try {
                 if (demo) { Append("预览模式仅展示界面，不执行网络修改。"); return; }
@@ -185,7 +247,7 @@ namespace GlobalProtectorWiFi {
                     var elevated=new ProcessStartInfo(Application.ExecutablePath,mode=="Start"?"--autostart":"--recover") {UseShellExecute=true,Verb="runas"};
                     Process.Start(elevated); allowClose=true; Close(); return;
                 }
-                hadError=false; lastError=""; stopping=false; armed=mode=="Start"; if(!resume) openedVpn=false;
+                hadError=false; lastError=""; stopping=mode=="Restore"; armed=mode=="Start"; if(!resume) openedVpn=false;
                 string path=ExtractEngine();
                 if(mode=="Start") { string stopPath=Path.Combine(Program.Root,"stop.request"); if(File.Exists(stopPath)) File.Delete(stopPath); }
                 var info=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"WindowsPowerShell\\v1.0\\powershell.exe"));
@@ -198,25 +260,25 @@ namespace GlobalProtectorWiFi {
                 worker.ErrorDataReceived += delegate(object s,DataReceivedEventArgs e) { if(!String.IsNullOrWhiteSpace(e.Data)) Dispatch(delegate { Append(e.Data); hadError=true; lastError=e.Data; }); };
                 var observedWorker=worker; worker.Exited += delegate { observedWorker.WaitForExit(); Dispatch(delegate { WorkerEnded(); }); };
                 running=true; start.Enabled=false; restore.Enabled=true; targets.Enabled=false; dnsMode.Enabled=false; manualDns.Enabled=false;
-                SetStatus("检查中","正在检查当前网络","请稍候，确认后将提示你连接 GlobalProtect。"); worker.Start(); worker.BeginOutputReadLine(); worker.BeginErrorReadLine();
-            } catch(Exception e) { running=false; armed=false; start.Enabled=true; restore.Enabled=false; targets.Enabled=true; dnsMode.Enabled=true; manualDns.Enabled=!dnsMode.Checked; SetStatus("未开始","操作未完成",e.Message); Append(e.Message); }
+                SetStatus(mode=="Restore"?"恢复中":"检查中"); worker.Start(); worker.BeginOutputReadLine(); worker.BeginErrorReadLine();
+            } catch(Exception e) { running=false; armed=false; start.Enabled=true; restore.Enabled=false; targets.Enabled=true; dnsMode.Enabled=true; manualDns.Enabled=!dnsMode.Checked; SetStatus("未开始"); Append(e.Message); }
         }
         void Dispatch(Action action) { try { if(!IsDisposed && IsHandleCreated) BeginInvoke(action); } catch(InvalidOperationException) {} }
         void OnEvent(string line) {
             try {
                 var evt=Program.Json.Deserialize<Dictionary<string,object>>(line); string name=Convert.ToString(evt["Event"]); object data=evt.ContainsKey("Data")?evt["Data"]:null;
-                if(name=="WAITING_FOR_VPN") { SetStatus("等待连接","现在可以连接 GlobalProtect","助手已在本机等待，即使连接时断网也会继续执行。"); Append("网络基线已保存，等待 VPN 连接。"); if(autoOpen.Checked && !openedVpn) { openedVpn=true; OpenVpn(); } }
-                else if(name=="APPLIED_TEMPORARY_SPLIT") { SetStatus("验证中","分流已应用，正在验证","正在检查目标路由、普通上网和域名解析。"); Append("临时分流已应用，正在验证。"); }
-                else if(name=="READY") { SetStatus("分流正常","VPN 与日常上网可以并行","请保留助手运行；断开 VPN 或点击“停止并恢复”会撤销临时改动。"); Append("路由、公网和 DNS 验证通过。"); tray.Visible=true; }
-                else if(name=="ERROR" || name=="ROLLBACK_FAILED") { hadError=true; var d=data as Dictionary<string,object>; lastError=d!=null && d.ContainsKey("Message")?Convert.ToString(d["Message"]):Convert.ToString(data); Append(lastError); SetStatus("需要查看","分流未保持运行",Friendly(lastError)); }
-                else if(name=="RESTORED") { Append("临时改动已恢复。"); SetStatus("已恢复","已恢复连接前的网络设置",hadError?Friendly(lastError):"下次使用时，先开启助手，再连接 VPN。"); }
-                else if(name=="HEALTH") { Append("已完成一次网络健康检查。"); }
+                if(name=="WAITING_FOR_VPN") { SetStatus("等待连接"); Append("等待 VPN 连接。"); if(autoOpen.Checked && !openedVpn) { openedVpn=true; OpenVpn(); } }
+                else if(name=="APPLIED_TEMPORARY_SPLIT") { SetStatus("验证中"); Append("临时分流已应用，正在验证。"); }
+                else if(name=="READY") { SetStatus("分流正常"); Append("路由、公网和 DNS 验证通过。"); tray.Visible=true; }
+                else if(name=="ERROR" || name=="ROLLBACK_FAILED") { hadError=true; var d=data as Dictionary<string,object>; lastError=d!=null && d.ContainsKey("Message")?Convert.ToString(d["Message"]):Convert.ToString(data); Append(lastError); SetStatus("需要查看"); }
+                else if(name=="RESTORED") { Append("临时改动已恢复。"); SetStatus("已恢复"); }
+                else if(name=="HEALTH") { }
                 else if(name=="DNS_AFTER_APPLY") { var d=data as Dictionary<string,object>; if(d!=null && d.ContainsKey("NameServer")) Append("VPN DNS："+Convert.ToString(d["NameServer"])); }
             } catch { Append(line); }
         }
         string Friendly(string error) {
             if(error.IndexOf("Disconnect GlobalProtect",StringComparison.OrdinalIgnoreCase)>=0) return "请先断开 GlobalProtect，再开启助手。";
-            if(error.IndexOf("earlier session",StringComparison.OrdinalIgnoreCase)>=0) return "上次有未恢复的改动，请点击“停止并恢复”后重试。";
+            if(error.IndexOf("earlier session",StringComparison.OrdinalIgnoreCase)>=0) return "上次有未恢复的改动，请点击“停止”后重试。";
             if(error.IndexOf("default route",StringComparison.OrdinalIgnoreCase)>=0) return "VPN 的路由策略发生变化，助手已停止，请查看日志。";
             return error.Length>180?error.Substring(0,180)+"…":error;
         }
@@ -224,23 +286,24 @@ namespace GlobalProtectorWiFi {
             running=false;
             bool pending=false;
             try { string path=Path.Combine(Program.Root,"state.json"); if(File.Exists(path)) { var saved=Program.Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(path)); pending=saved.ContainsKey("Stage") && Convert.ToString(saved["Stage"])!="restored"; } } catch { pending=true; }
-            if(pending) { armed=false; quitWhenStopped=false; hadError=true; Show(); SetStatus("需要恢复","仍有网络快照等待恢复","请先断开 VPN，再点击“停止并恢复”。本机日志保留了详细原因。"); }
+            recoveryNeeded=pending;
+            if(pending) { armed=false; quitWhenStopped=false; hadError=true; Show(); SetStatus("需要恢复"); }
             if(Lifecycle.ShouldRearm(armed,stopping,hadError,pending)) {
-                SetStatus("等待重连","VPN 已断开，助手继续待命","网络已恢复。下次连接 VPN 时，助手会重新应用分流，无需重启。");
-                Append("本轮已恢复，继续等待下次 VPN 连接。");
+                SetStatus("等待重连");
+                Append("已恢复，等待重连。");
                 reconnectTimer=new System.Windows.Forms.Timer {Interval=1500};
                 reconnectTimer.Tick += delegate { reconnectTimer.Stop(); reconnectTimer.Dispose(); reconnectTimer=null; if(armed && !stopping) StartWorker("Start",true); };
                 reconnectTimer.Start(); return;
             }
-            armed=false; start.Enabled=true; restore.Enabled=true; targets.Enabled=true; dnsMode.Enabled=true; manualDns.Enabled=!dnsMode.Checked;
-            if(!hadError) SetStatus("已停止","助手已停止，本次分流已结束","重新使用时，请先断开 VPN，再开启助手。");
-            else if(!pending) SetStatus("已停止","本次操作已结束",Friendly(lastError)+"  可查看本机日志。");
+            armed=false; stopping=false; start.Enabled=true; restore.Enabled=true; targets.Enabled=true; dnsMode.Enabled=true; manualDns.Enabled=!dnsMode.Checked;
+            if(!hadError) SetStatus("已停止");
+            else if(!pending) SetStatus("已停止");
             if(quitWhenStopped && !pending) { allowClose=true; Close(); }
         }
         void StopWorker(bool quit) {
             quitWhenStopped=quit; armed=false; if(reconnectTimer!=null) {reconnectTimer.Stop(); reconnectTimer.Dispose(); reconnectTimer=null;}
             if(demo) { allowClose=true; if(quit) Close(); return; }
-            if(running) { if(stopping) return; stopping=true; Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"stop.request"),DateTime.Now.ToString("o")); SetStatus("恢复中","正在撤销临时改动","请稍候，恢复记录会保存到本机日志。"); }
+            if(running) { if(stopping) return; stopping=true; Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"stop.request"),DateTime.Now.ToString("o")); SetStatus("恢复中"); }
             else if(File.Exists(Path.Combine(Program.Root,"state.json"))) { StartWorker("Restore"); }
             else if(quit) { allowClose=true; Close(); }
         }
