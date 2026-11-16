@@ -282,3 +282,28 @@ for($cycle=0;$cycle -lt 3;$cycle++) {
     Assert (@($script:Routes | Where-Object DestinationPrefix -eq '192.0.2.10/32').Count -eq 0) 'Repeated disconnection leaked a host route.'
 }
 'PASS: three connect/disconnect cycles restore without duplicate or leaked routes.'
+
+Reset-Fixture
+$script:WaitRoutes=@($script:Routes)
+$script:WaitTicks=0
+$script:WaitClock=[datetime]'2026-01-01'
+$script:StopPath=Join-Path $PSScriptRoot 'bin\wait-stop.request'
+New-Item -ItemType Directory -Path (Split-Path $script:StopPath) -Force | Out-Null
+function Get-Date { $script:WaitClock }
+function Start-Sleep {
+    param($Seconds)
+    $script:WaitTicks++; $script:WaitClock=$script:WaitClock.AddSeconds($Seconds)
+    if($script:WaitTicks -eq 1){$script:Routes=@()}
+    elseif($script:WaitTicks -eq 2){$script:Routes=@($script:WaitRoutes)}
+    if($script:WaitTicks -gt 8){throw 'VPN readiness test failed to finish.'}
+}
+try {
+    $ready=Wait-VpnReady -StableSeconds 4
+    Assert ($null -ne $ready -and $script:WaitTicks -eq 4 -and $ready.Defaults.Count -eq 1 -and $script:Writes.Count -eq 0) 'Transient route loss was not retried with a fresh stability interval.'
+    Set-Content -LiteralPath $script:StopPath -Value 'test stop'
+    Assert ($null -eq (Wait-VpnReady) -and $script:Writes.Count -eq 0) 'Cancelled routing wait did not exit without network writes.'
+    'PASS: transient empty VPN routes reset readiness; cancellation exits without network changes.'
+} finally {
+    Remove-Item -LiteralPath $script:StopPath -ErrorAction SilentlyContinue
+    Remove-Item Function:\Get-Date,Function:\Start-Sleep
+}

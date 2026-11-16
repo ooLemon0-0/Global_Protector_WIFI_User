@@ -31,6 +31,13 @@ namespace GlobalProtectorWiFi {
             if(String.IsNullOrWhiteSpace(profile.Password) || profile.Password.Length>1024)throw new ArgumentException("请填写密码。");
         }
         public static bool IsComplete(LoginProfile profile){try{Validate(profile);return true;}catch(ArgumentException){return false;}}
+        public static bool PasswordLabelRecognized(string staticText,string fieldDescription) {
+            string text=((staticText??"")+" "+(fieldDescription??"")).ToLowerInvariant();
+            return text.Contains("password") || text.Contains("密码");
+        }
+        public static bool KnownNativeCredentialForm(string windowClass,string usernameId,string passwordId,string submitId) {
+            return windowClass=="#32770" && usernameId=="1166" && passwordId=="1167" && submitId=="1168";
+        }
         public static string Decide(bool trusted,bool portalMatches,bool blocked,int users,int passwords,bool submit,bool connect,bool allowConnect) {
             if(!trusted || !portalMatches || blocked)return "manual";
             if(passwords>0)return users==1 && passwords==1 && submit?"credentials":"manual";
@@ -91,21 +98,48 @@ namespace GlobalProtectorWiFi {
             finally {data.StateAction=2;WinVerifyTrust(new IntPtr(-1),ref action,ref data);Marshal.DestroyStructure(pointer,typeof(FileInfo));Marshal.FreeHGlobal(pointer);}
         }
     }
+    internal static class LoginDiagnostics {
+        internal static void Event(string stage,object data=null) {
+            try{Directory.CreateDirectory(Program.Root);File.AppendAllText(Path.Combine(Program.Root,"login-diagnostic.jsonl"),new System.Web.Script.Serialization.JavaScriptSerializer().Serialize(new{Time=DateTime.Now.ToString("o"),Stage=stage,Data=data})+Environment.NewLine,Encoding.UTF8);}catch{}
+        }
+        internal static object Capture() {
+            var profile=CredentialVault.Read(CredentialVault.SavedPath);
+            try {
+                bool portalMatch=false;try{portalMatch=LoginRules.PortalKey(profile.Portal)==LoginRules.PortalKey(ClientIdentity.ActivePortal());}catch{}
+                var processes=new List<object>();
+                foreach(var process in Process.GetProcessesByName("PanGPA"))using(process){
+                    var windows=new List<object>();string path=process.MainModule.FileName;
+                    foreach(AutomationElement root in AutomationElement.RootElement.FindAll(TreeScope.Children,new PropertyCondition(AutomationElement.ProcessIdProperty,process.Id))){
+                        var elements=root.FindAll(TreeScope.Descendants,Condition.TrueCondition).Cast<AutomationElement>().ToArray();
+                        string labels=String.Join(" ",elements.Where(x=>x.Current.ControlType==ControlType.Text).Select(x=>x.Current.Name));
+                        windows.Add(new {Handle=root.Current.NativeWindowHandle,ClassName=root.Current.ClassName,Visible=!root.Current.IsOffscreen,Enabled=root.Current.IsEnabled,HasPasswordLabel=labels.Contains("密码") || labels.ToLowerInvariant().Contains("password"),HasCertificateLabel=labels.Contains("证书") || labels.ToLowerInvariant().Contains("certificate"),Elements=elements.Select(x=>new {Type=x.Current.ControlType.ProgrammaticName,Class=x.Current.ClassName,Id=x.Current.AutomationId,Enabled=x.Current.IsEnabled,Offscreen=x.Current.IsOffscreen,Password=x.Current.IsPassword,KnownName=new[]{"连接","Connect","登录","Login","确定","OK","继续","Continue","取消","Cancel","用户名","Username","密码","Password"}.Contains(x.Current.Name)?x.Current.Name:""}).ToArray()});
+                    }
+                    processes.Add(new{Pid=process.Id,SameSession=process.SessionId==Process.GetCurrentProcess().SessionId,SameUser=ClientIdentity.SameUser(process),Trusted=ClientIdentity.Trusted(path),Windows=windows});
+                }
+                return new {Time=DateTime.Now.ToString("o"),Admin=Program.Admin,ProfileComplete=LoginRules.IsComplete(profile),PortalMatches=portalMatch,Processes=processes};
+            }finally{profile.Password="";}
+        }
+    }
     internal static class NativeLogin {
         static readonly string[] ConnectNames={"连接","Connect"};
         static readonly string[] SubmitNames={"连接","Connect","登录","Login","Sign In","Sign in","确定","OK"};
         static bool Match(string value,string[] choices){return choices.Any(x=>String.Equals((value??"").Trim(),x,StringComparison.OrdinalIgnoreCase));}
         static bool Visible(AutomationElement item){try{return item.Current.IsEnabled && !item.Current.IsOffscreen;}catch{return false;}}
         static bool PortalMatches(LoginProfile profile){try{return LoginRules.PortalKey(ClientIdentity.ActivePortal())==LoginRules.PortalKey(profile.Portal);}catch{return false;}}
-        static string Label(AutomationElement item){try {var label=item.Current.LabeledBy;return (item.Current.Name??"")+" "+(label==null?"":label.Current.Name);}catch{return "";}}
+        static string Label(AutomationElement item){
+            var parts=new List<string>();
+            try{parts.Add(item.Current.Name);parts.Add(item.Current.HelpText);var label=item.Current.LabeledBy;if(label!=null)parts.Add(label.Current.Name);}catch(ElementNotAvailableException){}
+            return String.Join(" ",parts.Where(x=>!String.IsNullOrEmpty(x)));
+        }
         static bool Warning(string text){string lower=text.ToLowerInvariant();return new[]{"验证码","动态密码","一次性","安全码","多因素","证书","代理","proxy","certificate","one-time","otp","saml","token","verification code","passcode","security code"," pin"}.Any(x=>lower.Contains(x));}
         internal static string Run(LoginProfile profile,bool allowConnect,CancellationToken cancel,Action<string> notice) {
-            bool clicked=false,notified=false;int? boundPid=null;DateTime boundStart=DateTime.MinValue;string trustedPath=null;DateTime until=allowConnect?DateTime.UtcNow.AddMinutes(2):DateTime.MaxValue;
+            bool clicked=false,notified=false;int? boundPid=null;DateTime boundStart=DateTime.MinValue;string trustedPath=null;DateTime until=allowConnect?DateTime.UtcNow.AddMinutes(2):DateTime.MaxValue;var observed=new HashSet<string>();
             try {
                 LoginRules.Validate(profile);
+                LoginDiagnostics.Event("LOGIN_START",new{AllowConnect=allowConnect});
                 while(DateTime.UtcNow<until) {
                     cancel.ThrowIfCancellationRequested();
-                    if(!PortalMatches(profile))return "自动登录未执行：当前 VPN 门户与登录设置不一致。";
+                    if(!PortalMatches(profile)){LoginDiagnostics.Event("PORTAL_MISMATCH");return "自动登录未执行：当前 VPN 门户与登录设置不一致。";}
                     foreach(var process in Process.GetProcessesByName("PanGPA")) {
                         using(process) {
                             if(process.SessionId!=Process.GetCurrentProcess().SessionId || !ClientIdentity.SameUser(process))continue;
@@ -114,6 +148,7 @@ namespace GlobalProtectorWiFi {
                             if(boundPid!=process.Id || boundStart!=started || !String.Equals(path,trustedPath,StringComparison.OrdinalIgnoreCase)) {
                                 if(!ClientIdentity.Trusted(path))return "自动登录未执行：无法验证 GlobalProtect 程序签名。";
                                 boundPid=process.Id;boundStart=started;trustedPath=path;
+                                LoginDiagnostics.Event("CLIENT_VERIFIED",new{Pid=process.Id});
                             }
                             var roots=AutomationElement.RootElement.FindAll(TreeScope.Children,new PropertyCondition(AutomationElement.ProcessIdProperty,process.Id));
                             foreach(AutomationElement root in roots) {
@@ -135,9 +170,12 @@ namespace GlobalProtectorWiFi {
                                     if(users.Length!=1 || !users[0].TryGetCurrentPattern(ValuePattern.Pattern,out portalValue))blocked=true;
                                     else {try{if(LoginRules.PortalKey(((ValuePattern)portalValue).Current.Value)!=LoginRules.PortalKey(profile.Portal))blocked=true;}catch{blocked=true;}}
                                 }
-                                if(passwords.Length>0 && (Warning(Label(passwords[0])) || !text.ToLowerInvariant().Contains("password") && !text.Contains("密码")))blocked=true;
+                                bool knownNative=users.Length==1 && passwords.Length==1 && submit!=null && LoginRules.KnownNativeCredentialForm(root.Current.ClassName,users[0].Current.AutomationId,passwords[0].Current.AutomationId,submit.Current.AutomationId);
+                                if(passwords.Length>0 && (Warning(Label(passwords[0])) || !knownNative && !LoginRules.PasswordLabelRecognized(text,Label(passwords[0]))))blocked=true;
                                 if(users.Length==1 && Warning(Label(users[0])))blocked=true;
                                 string decision=LoginRules.Decide(true,PortalMatches(profile),blocked,users.Length,passwords.Length,submit!=null,connect!=null,allowConnect && !clicked);
+                                string signature=root.Current.NativeWindowHandle+":"+users.Length+":"+passwords.Length+":"+submissions.Length+":"+connections.Length+":"+blocked+":"+decision;
+                                if(observed.Add(signature))LoginDiagnostics.Event("WINDOW",new{Handle=root.Current.NativeWindowHandle,Class=root.Current.ClassName,Web=web,Blocked=blocked,Users=users.Length,Passwords=passwords.Length,SubmitButtons=submissions.Length,ConnectButtons=connections.Length,Decision=decision});
                                 if(decision=="manual") {
                                     if(!web && passwords.Length==0 && blocked){if(!notified){notice("请先在 GlobalProtect 中手动处理当前窗口；助手未提交凭据。");notified=true;}continue;}
                                     return "此窗口需手动处理；自动登录已停止。";
@@ -148,20 +186,20 @@ namespace GlobalProtectorWiFi {
                                     if(!users[0].TryGetCurrentPattern(ValuePattern.Pattern,out u) || !passwords[0].TryGetCurrentPattern(ValuePattern.Pattern,out p) || !submit.TryGetCurrentPattern(InvokePattern.Pattern,out b))return "登录窗口不支持安全填写，请手动登录。";
                                     if(((ValuePattern)u).Current.IsReadOnly || ((ValuePattern)p).Current.IsReadOnly)return "登录窗口不可编辑，请手动登录。";
                                     cancel.ThrowIfCancellationRequested();if(!PortalMatches(profile))return "VPN 门户已变化，未提交凭据。";
-                                    ((ValuePattern)u).SetValue(profile.Username);cancel.ThrowIfCancellationRequested();
+                                    LoginDiagnostics.Event("FILL_USERNAME");((ValuePattern)u).SetValue(profile.Username);cancel.ThrowIfCancellationRequested();
                                     if(!PortalMatches(profile))return "VPN 门户已变化，未填写密码。";
-                                    ((ValuePattern)p).SetValue(profile.Password);cancel.ThrowIfCancellationRequested();
+                                    LoginDiagnostics.Event("FILL_PASSWORD");((ValuePattern)p).SetValue(profile.Password);cancel.ThrowIfCancellationRequested();
                                     if(!PortalMatches(profile))return "VPN 门户已变化，未提交登录。";
-                                    ((InvokePattern)b).Invoke();return "已提交登录，等待 GlobalProtect 连接。";
+                                    ((InvokePattern)b).Invoke();LoginDiagnostics.Event("LOGIN_SUBMITTED");return "已提交登录，等待 GlobalProtect 连接。";
                                 }
-                                if(decision=="connect") {object pattern;if(connect.TryGetCurrentPattern(InvokePattern.Pattern,out pattern)){cancel.ThrowIfCancellationRequested();((InvokePattern)pattern).Invoke();clicked=true;}}
+                                if(decision=="connect") {object pattern;if(connect.TryGetCurrentPattern(InvokePattern.Pattern,out pattern)){cancel.ThrowIfCancellationRequested();((InvokePattern)pattern).Invoke();clicked=true;LoginDiagnostics.Event("CONNECT_CLICKED");}}
                             }
                         }
                     }
                     if(cancel.WaitHandle.WaitOne(600))cancel.ThrowIfCancellationRequested();
                 }
-                return "未检测到受支持的登录窗口，请手动登录。";
-            }catch(OperationCanceledException){return "";}catch{return "自动登录未完成，请在 GlobalProtect 中手动登录。";}
+                LoginDiagnostics.Event("WINDOW_TIMEOUT");return "自动登录超时：未检测到可填写的窗口。";
+            }catch(OperationCanceledException){LoginDiagnostics.Event("LOGIN_CANCELLED");return "";}catch(Exception e){LoginDiagnostics.Event("LOGIN_EXCEPTION",new{Type=e.GetType().Name,HResult=e.HResult});return "自动登录失败："+e.GetType().Name+"。请查看登录诊断日志。";}
         }
     }
 }

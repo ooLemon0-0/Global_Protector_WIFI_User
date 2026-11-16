@@ -24,14 +24,14 @@
 ![登录设置](docs/login-settings.png)
 
 - 在登录设置中预输入门户、账号、密码；密码框遮挡输入。缺少任意一项均不能继续启动。
-- 启动助手会自动打开已安装的 GlobalProtect，尝试点击连接、识别原生账号密码窗口、填写并提交一次。旧版的自动连接关闭设置不再生效。
+- 启动助手会自动打开已安装的 GlobalProtect，点击连接、识别原生账号密码窗口、填写并提交一次。兼容 GlobalProtect 5.2 原生登录控件；旧版的自动连接关闭设置不再生效。
 - 仅接受与当前配置相同的门户，目标程序必须是官方服务所指向、签名有效且签发组织为 Palo Alto Networks 的 PanGPA.exe，并且运行在相同 Windows 用户和会话中。不会把密码填入浏览器或其他进程。
 - 网页 / SAML、验证码 / MFA、代理密码和不明确的窗口交回用户处理。证书确认不会自动接受，需用户自行核验；确认后若出现兼容的原生登录窗口，可继续填写。
 - 每轮最多提交一次用户名和密码，不会反复尝试错误密码。VPN 断开后的待命阶段不会擅自点击连接；用户手动发起重连时可以继续处理新的原生登录窗口。
 - 勾选“记住登录信息”后，门户、账号和密码通过 Windows DPAPI **CurrentUser** 加密保存在本机；不勾选则只在本次助手会话中保留。UAC 提权使用一次性加密交接文件，命令行只包含随机会话 ID。
 - 不读取 GlobalProtect 已保存的密码，不把凭据写入 settings.json、PowerShell 参数、日志或仓库。加密资料不能直接复制到另一 Windows 用户或另一电脑使用。
 
-这是 UI 兼容辅助功能，不是 Palo Alto 官方登录 API。已验证本机客户端签名，已进行门户绑定、加密存储和模拟决策测试；**没有使用真实账号密码做登录实测**。各版本的窗口可能不同，无法识别时会停止填写并提示手动登录。
+这是 UI 兼容辅助功能，不是 Palo Alto 官方登录 API。已在本机 GlobalProtect 5.2.2 原生窗口实测自动点击连接、填写用户预存的账号密码及提交登录，并得到用户确认；门户绑定、加密存储与异常决策另有模拟测试。不同版本的窗口仍可能不同，不能识别时显示登录失败并记录诊断原因，不反复提交密码。
 
 也可使用 GlobalProtect 官方的 [Save User Credentials / SSO 设置](https://docs.paloaltonetworks.com/ngfw/help/10-1/globalprotect/network-globalprotect-portals/globalprotect-portals-agent-configuration-tab/globalprotect-portals-agent-authentication-tab)，具体取决于公司策略。
 
@@ -63,6 +63,7 @@ GlobalProtect 需预先安装。程序未进行商业代码签名，请校验发
 本机数据位于 `%LOCALAPPDATA%\GlobalProtectorWiFi\`：
 
 - `events.jsonl`：状态、检测与错误记录。
+- `login-diagnostic.jsonl`：自动连接、控件识别、填写与提交的阶段记录，不记录账号、密码或输入框的值。
 - `state.json`：恢复快照。
 - `settings.json`：本机保存的目标地址及 DNS 选项。
 - `login-profile.dpapi`：仅在用户选择记住登录信息时保存的加密凭据。
@@ -83,6 +84,8 @@ GlobalProtect 需预先安装。程序未进行商业代码签名，请校验发
 输出为 `dist/GlobalProtectorWiFi.exe`。使用 Windows 自带 C# 编译器，不需要 NuGet、Node.js、Python 或额外的 .NET SDK。`src/Engine.ps1` 作为资源嵌入。
 
 测试使用模拟网卡、路由和 DNS，验证修改范围、事务回退、重复 DNS、输入校验与异常状态；**不会对测试机器执行真实网络修改**。界面可用 `GlobalProtectorWiFi.exe --demo` 只读预览。
+
+正在运行开发版时，可用 `./build.ps1 -Test -OutputDirectory ./dist/next` 将新版构建到另一目录，保留现有进程。
 
 GitHub Actions 会在推送时构建和测试；推送 `v*` 标签时构建带校验和的 EXE、便携 ZIP、源码 ZIP，并创建 Release。GitHub 自带的 Source code 下载也可使用。
 

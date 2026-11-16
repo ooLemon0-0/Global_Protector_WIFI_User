@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Global Protector WiFi")]
 [assembly: AssemblyDescription("Independent GlobalProtect split-routing companion")]
-[assembly: AssemblyVersion("0.3.1.0")]
-[assembly: AssemblyFileVersion("0.3.1.0")]
+[assembly: AssemblyVersion("0.3.2.0")]
+[assembly: AssemblyFileVersion("0.3.2.0")]
 namespace GlobalProtectorWiFi {
     internal static class Program {
         internal const string DefaultTarget = "10.213.134.31";
@@ -26,6 +26,10 @@ namespace GlobalProtectorWiFi {
         internal static bool Admin { get { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); } }
         [STAThread] static int Main(string[] args) {
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+            if(args.Length==2 && args[0]=="--diagnose-login") {
+                try{File.WriteAllText(args[1],Program.Json.Serialize(LoginDiagnostics.Capture()),Encoding.UTF8);return 0;}
+                catch(Exception e){File.WriteAllText(args[1],e.GetType().Name,Encoding.UTF8);return 1;}
+            }
             if((args.Length==2 || args.Length==3) && args[0]=="--render-preview") {
                 using(var form=new MainForm(false,true,false)) {
                     if(args.Length==3 && args[2]=="login"){form.RenderLoginSettings(args[1]);return 0;}
@@ -226,7 +230,7 @@ namespace GlobalProtectorWiFi {
             SetStatus("自动登录");
             System.Threading.Tasks.Task.Factory.StartNew(delegate {return NativeLogin.Run(copy,clickConnect,cancellation.Token,message=>Dispatch(delegate {if(loginCancel==cancellation && !cancellation.IsCancellationRequested){Append(message);SetStatus("手动确认");}}));}).ContinueWith(task=>{
                 copy.Password="";bool cancelled=cancellation.IsCancellationRequested;
-                Dispatch(delegate {if(loginCancel==cancellation){loginCancel=null;if(!cancelled && !String.IsNullOrEmpty(task.Result)){Append(task.Result);if(running && armed)SetStatus(task.Result.StartsWith("已提交登录",StringComparison.Ordinal)?"等待连接":"手动登录");}}cancellation.Dispose();});
+                Dispatch(delegate {if(loginCancel==cancellation){loginCancel=null;if(!cancelled && !String.IsNullOrEmpty(task.Result)){Append(task.Result);if(running && armed)SetStatus(task.Result.StartsWith("已提交登录",StringComparison.Ordinal)?"等待连接":"登录失败");}}cancellation.Dispose();});
             });
         }
         void ShowHistory() {
@@ -270,11 +274,11 @@ namespace GlobalProtectorWiFi {
             else if(tag=="恢复中")status="恢复中";
             else if(tag=="自动登录")status="登录中";
             else if(tag=="手动确认")status="等待确认";
-            else if(tag=="手动登录")status="需手动登录";
+            else if(tag=="登录失败")status="登录失败";
             else if(tag=="需要恢复")status="需要恢复";
             else if(tag=="需要查看" || tag=="未开始" || tag=="已停止" && hadError)status="连接失败";
             stateTitle.Text=status;
-            bool warning=status=="需要恢复" || status=="连接失败";
+            bool warning=status=="需要恢复" || status=="连接失败" || status=="登录失败";
             stateTitle.ForeColor=warning?Color.FromArgb(184,102,35):ink;
             heroMark.Tint=warning?Color.FromArgb(184,102,35):accent;heroMark.Invalidate();
             tray.Text="Global Protector · "+status;
@@ -286,7 +290,7 @@ namespace GlobalProtectorWiFi {
         }
         void LoadSettings() { try { string path=Path.Combine(Program.Root,"settings.json"); if(File.Exists(path)) { var d=Program.Json.Deserialize<Dictionary<string,string>>(File.ReadAllText(path)); targets.Text=d.ContainsKey("targets") && !String.IsNullOrWhiteSpace(d["targets"])?d["targets"]:Program.DefaultTarget; manualDns.Text=d.ContainsKey("dns")?d["dns"]:""; dnsMode.Checked=String.IsNullOrEmpty(manualDns.Text); } } catch { targets.Text=Program.DefaultTarget; Append("设置未读取，已使用预设目标。"); } }
         void SaveSettings(string[] list,string dns) { Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"settings.json"),Program.Json.Serialize(new Dictionary<string,string>{{"targets",String.Join(Environment.NewLine,list)},{"dns",dns}}),Encoding.UTF8); }
-        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.3.1.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
+        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.3.2.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
         void StartWorker(string mode, bool resume = false) {
             string loginSession=null;
             try {

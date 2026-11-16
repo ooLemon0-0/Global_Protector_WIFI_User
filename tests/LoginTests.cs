@@ -18,6 +18,13 @@ class LoginTests {
         Assert(typeof(LoginProfile).GetField("Enabled")==null,"Automatic login remains optional");
         var legacy=new System.Web.Script.Serialization.JavaScriptSerializer().Deserialize<LoginProfile>("{\"Portal\":\"vpn.example.com\",\"Username\":\"test-user\",\"Password\":\"test-password\",\"Enabled\":false,\"Remember\":true}");
         Assert(LoginRules.IsComplete(legacy) && legacy.Remember,"Legacy disabled-login profile failed migration");
+        Assert(LoginRules.PasswordLabelRecognized("Enter login credentials","Password"),"GlobalProtect 5.2 password description was rejected");
+        Assert(LoginRules.PasswordLabelRecognized("登录","密码"),"Chinese password description was rejected");
+        Assert(LoginRules.PasswordLabelRecognized("Password",""),"Static password label was rejected");
+        Assert(!LoginRules.PasswordLabelRecognized("Enter login credentials","Username"),"Unrecognized credential label was accepted");
+        Assert(LoginRules.KnownNativeCredentialForm("#32770","1166","1167","1168"),"Verified GlobalProtect 5.2 native credential controls rejected");
+        Assert(!LoginRules.KnownNativeCredentialForm("Browser","1166","1167","1168"),"Different window class accepted");
+        Assert(!LoginRules.KnownNativeCredentialForm("#32770","1166","1167","1179"),"Cancel button accepted as submit");
         Assert(LoginRules.Decide(true,true,false,1,1,true,false,true)=="credentials","Native username/password layout");
         Assert(LoginRules.Decide(false,true,false,1,1,true,false,true)=="manual","Untrusted process");
         Assert(LoginRules.Decide(true,false,false,1,1,true,false,true)=="manual","Different portal");

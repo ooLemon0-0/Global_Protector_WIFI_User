@@ -16,7 +16,7 @@ $script:Runtime=$DataDirectory
 $script:StatePath=Join-Path $script:Runtime 'state.json'
 $script:StopPath=Join-Path $script:Runtime 'stop.request'
 $script:LogPath=Join-Path $script:Runtime 'events.jsonl'
-$script:ToolVersion='0.3.1'
+$script:ToolVersion='0.3.2'
 
 function Write-Event([string]$Event,$Data) {
     $line=[ordered]@{Time=(Get-Date).ToString('o');Event=$Event;Data=$Data} | ConvertTo-Json -Depth 9 -Compress
@@ -60,6 +60,24 @@ function Get-Vpn {
     $all=@(Get-NetAdapter | Where-Object InterfaceDescription -like 'PANGP*')
     if ($all.Count -ne 1) { throw '没有找到唯一的 GlobalProtect 网卡。请先安装官方客户端；多张 PANGP 网卡需先排查。' }
     $all[0]
+}
+function Wait-VpnReady([int]$StableSeconds=10) {
+    $stableSince=$null; $stableKey=''
+    while ($true) {
+        if (Test-Path -LiteralPath $script:StopPath) { Write-Event 'WAIT_CANCELLED' '已停止等待 VPN，网络未修改。'; return $null }
+        $vpn=Get-Vpn
+        # Enumerate first: an adapter can temporarily have no routes while
+        # GlobalProtect replaces its connection. A filtered CIM query throws
+        # for that normal transition instead of returning an empty list.
+        $routes=@(Get-NetRoute -AddressFamily IPv4 -PolicyStore ActiveStore | Where-Object InterfaceIndex -eq $vpn.ifIndex)
+        $defaults=@($routes | Where-Object DestinationPrefix -eq '0.0.0.0/0')
+        if ($vpn.Status -eq 'Up' -and $defaults.Count -eq 1) {
+            $key=([string]$vpn.InterfaceGuid)+':'+$vpn.ifIndex+':'+$defaults[0].NextHop
+            if ($key -ne $stableKey -or $null -eq $stableSince) { $stableSince=Get-Date; $stableKey=$key }
+            if (((Get-Date)-$stableSince).TotalSeconds -ge $StableSeconds) { return [pscustomobject]@{Vpn=$vpn;Routes=$routes;Defaults=$defaults} }
+        } else { $stableSince=$null; $stableKey='' }
+        Start-Sleep -Seconds 2
+    }
 }
 function Get-BestRoute([string]$Address) {
     $routes=@(Find-NetRoute -RemoteIPAddress $Address | Where-Object { $null -ne $_.DestinationPrefix })
@@ -278,22 +296,9 @@ try {
     $vpn=$context.Vpn
     $baselineRoute=$context.BaselineRoute
     Write-Event 'WAITING_FOR_VPN' 'Now connect GlobalProtect. This local tool will continue while the internet is unavailable.'
-    while ($true) {
-        if (Test-Path -LiteralPath $script:StopPath) { Write-Event 'WAIT_CANCELLED' '已停止等待 VPN，网络未修改。'; return }
-        $vpn=Get-Vpn
-        if ($vpn.Status -eq 'Up') {
-            $defaults=@(Get-NetRoute -AddressFamily IPv4 -PolicyStore ActiveStore | Where-Object { $_.InterfaceIndex -eq $vpn.ifIndex -and $_.DestinationPrefix -eq '0.0.0.0/0' })
-            if ($defaults.Count -eq 1) { break }
-        }
-        Start-Sleep -Seconds 2
-    }
-    if ($vpn.Status -ne 'Up' -or $defaults.Count -ne 1) { throw '等待 VPN 连接超时，未修改网络。请确认 GlobalProtect 显示已连接。' }
-    Start-Sleep -Seconds 10
-    if (Test-Path -LiteralPath $script:StopPath) { Write-Event 'WAIT_CANCELLED' '已停止等待，网络未修改。'; return }
-    $vpn=Get-Vpn
-    $vpnRoutes=@(Get-NetRoute -InterfaceIndex $vpn.ifIndex -AddressFamily IPv4 -PolicyStore ActiveStore)
-    $defaults=@($vpnRoutes | Where-Object DestinationPrefix -eq '0.0.0.0/0')
-    if ($vpn.Status -ne 'Up' -or $defaults.Count -ne 1) { throw 'VPN did not remain connected; no changes made.' }
+    $ready=Wait-VpnReady
+    if ($null -eq $ready) { return }
+    $vpn=$ready.Vpn; $vpnRoutes=@($ready.Routes); $defaults=@($ready.Defaults)
     if (@($vpnRoutes | Where-Object DestinationPrefix -in @('0.0.0.0/1','128.0.0.0/1')).Count -gt 0) { throw 'This VPN uses unsupported half-default routes; no changes made.' }
     $v6Defaults=@(Get-NetRoute -InterfaceIndex $vpn.ifIndex -AddressFamily IPv6 -PolicyStore ActiveStore -ErrorAction SilentlyContinue | Where-Object DestinationPrefix -eq '::/0')
     if ($v6Defaults.Count -gt 0) { throw 'This VPN also controls IPv6; no changes made.' }

@@ -1,7 +1,7 @@
-param([switch]$Test)
+param([switch]$Test,[string]$OutputDirectory)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
-$out=Join-Path $root 'dist'
+$out=if($OutputDirectory){[IO.Path]::GetFullPath($OutputDirectory)}else{Join-Path $root 'dist'}
 New-Item -ItemType Directory -Path $out -Force | Out-Null
 $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 if(-not (Test-Path $compiler)) { $compiler=Join-Path $env:WINDIR 'Microsoft.NET\Framework\v4.0.30319\csc.exe' }
