@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256" role="img" aria-label="Global Protector WiFi">
+  <defs><linearGradient id="tile" x1="32" y1="8" x2="216" y2="248" gradientUnits="userSpaceOnUse"><stop stop-color="#18b2a3"/><stop offset="1" stop-color="#065b65"/></linearGradient></defs>
+  <rect x="8" y="8" width="240" height="240" rx="60" fill="url(#tile)" stroke="#fff" stroke-opacity=".16" stroke-width="2"/>
+  <path d="M128 48C146 61 168 69 187 73V121C187 162 166 192 128 211C90 192 69 162 69 121V73C88 69 110 61 128 48Z" fill="#fafffd"/>
+  <path d="M96 112C114 95 142 95 160 112" fill="none" stroke="#097374" stroke-width="13" stroke-linecap="round"/>
+  <path d="M109 132C120 122 136 122 147 132" fill="none" stroke="#097374" stroke-width="12" stroke-linecap="round"/>
+  <circle cx="128" cy="154" r="8" fill="#097374"/>
+</svg>

@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Global Protector WiFi")]
 [assembly: AssemblyDescription("Independent GlobalProtect split-routing companion")]
-[assembly: AssemblyVersion("1.0.0.0")]
-[assembly: AssemblyFileVersion("1.0.0.0")]
+[assembly: AssemblyVersion("1.0.1.0")]
+[assembly: AssemblyFileVersion("1.0.1.0")]
 namespace GlobalProtectorWiFi {
     internal static class Program {
         internal const string DefaultTarget = "10.213.134.31";
@@ -37,6 +37,7 @@ namespace GlobalProtectorWiFi {
             if((args.Length==2 || args.Length==3) && args[0]=="--render-preview") {
                 using(var form=new MainForm(false,true,false)) {
                     if(args.Length==3 && args[2]=="login"){form.RenderLoginSettings(args[1]);return 0;}
+                    if(args.Length==3 && args[2]=="close"){form.RenderCloseDialog(args[1]);return 0;}
                     form.Show(); if(args.Length==3)form.PreviewState(args[2]); Application.DoEvents();
                     using(var bitmap=new Bitmap(form.Width,form.Height)) { form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size)); bitmap.Save(args[1],System.Drawing.Imaging.ImageFormat.Png); }
                     form.Hide();
@@ -95,16 +96,6 @@ namespace GlobalProtectorWiFi {
             if(Focused && ShowFocusCues)ControlPaint.DrawFocusRectangle(e.Graphics,new Rectangle(5,5,Width-10,Height-10),ForeColor,fill);
         }
     }
-    internal sealed class WifiMark : Control {
-        internal Color Tint=Color.FromArgb(13,125,113);
-        internal WifiMark(){SetStyle(ControlStyles.SupportsTransparentBackColor|ControlStyles.UserPaint|ControlStyles.AllPaintingInWmPaint|ControlStyles.OptimizedDoubleBuffer,true);BackColor=Color.Transparent;}
-        protected override void OnPaint(PaintEventArgs e){
-            e.Graphics.SmoothingMode=SmoothingMode.AntiAlias;e.Graphics.ScaleTransform(Width/72F,Height/72F);
-            using(var b=new SolidBrush(Color.FromArgb(231,245,240)))e.Graphics.FillEllipse(b,0,0,71,71);
-            using(var p=new Pen(Tint,3.5F)){p.StartCap=LineCap.Round;p.EndCap=LineCap.Round;e.Graphics.DrawArc(p,17,20,38,30,205,130);e.Graphics.DrawArc(p,25,30,22,18,210,120);}
-            using(var b=new SolidBrush(Tint))e.Graphics.FillEllipse(b,33,43,6,6);
-        }
-    }
     internal sealed class MainForm : Form {
         readonly Color ink = Color.FromArgb(28, 45, 57), muted = Color.FromArgb(99, 116, 128), accent = Color.FromArgb(13, 125, 113);
         readonly bool demo, autoStart;
@@ -123,7 +114,10 @@ namespace GlobalProtectorWiFi {
         CancellationTokenSource updateCancel;
         UpdateResult availableUpdate;
 
-        readonly WifiMark heroMark = new WifiMark();
+        readonly LogoMark heroMark = new LogoMark();
+        Icon notificationIcon;
+        bool closePromptOpen;
+        Func<DialogResult> closePrompt;
         TextBox visibleLog;
         bool recoveryNeeded;
         LoginProfile loginProfile=new LoginProfile();
@@ -135,9 +129,9 @@ namespace GlobalProtectorWiFi {
             FormBorderStyle=FormBorderStyle.FixedSingle; MaximizeBox=false;
             StartPosition=FormStartPosition.CenterScreen; BackColor=Color.White; ForeColor=ink;
             Font=new Font("Microsoft YaHei UI",9F); AutoScaleDimensions=new SizeF(96,96); AutoScaleMode=AutoScaleMode.Dpi;
-            Icon=CreateIcon();
+            Icon=AppBrand.CreateIcon(32);
             Controls.Add(LabelAt("连接 GlobalProtect 时保留普通网络访问",24,17,352,30,9,false));
-            heroMark.SetBounds(164,63,72,72); Controls.Add(heroMark);
+            heroMark.SetBounds(160,59,80,80); Controls.Add(heroMark);
             stateTitle.SetBounds(24,148,352,38); stateTitle.TextAlign=ContentAlignment.MiddleCenter;
             stateTitle.Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold); Controls.Add(stateTitle);
             start.SetBounds(24,213,352,44); Style(start,true);start.Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold);
@@ -158,17 +152,28 @@ namespace GlobalProtectorWiFi {
             menu.Items.Add("检查更新",null,delegate {CheckForUpdates(true);});
             menu.Items.Add("停止",null,delegate {StopWorker(false);});
             menu.Items.Add("退出并恢复",null,delegate {StopWorker(true);});
-            tray.Icon=Icon; tray.Text="Global Protector · 就绪"; tray.ContextMenuStrip=menu;
+            notificationIcon=AppBrand.CreateIcon(16);tray.Icon=notificationIcon; tray.Text="Global Protector · 就绪"; tray.ContextMenuStrip=menu;
             tray.DoubleClick+=delegate {Show();WindowState=FormWindowState.Normal;Activate();};
-            FormClosing+=delegate(object s,FormClosingEventArgs e) {
-                if(!allowClose && (running || armed)) {e.Cancel=true;Hide();tray.Visible=true;tray.ShowBalloonTip(1800,"已最小化到托盘","右键菜单可停止或退出。",ToolTipIcon.Info);}
-            };
-            FormClosed+=delegate {CancelLogin();CancelUpdates();if(updateTimer!=null)updateTimer.Dispose();updateTip.Dispose();loginProfile.Password="";tray.Dispose();};
+            FormClosing+=HandleWindowClosing;
+            FormClosed+=delegate {CancelLogin();CancelUpdates();if(updateTimer!=null)updateTimer.Dispose();if(reconnectTimer!=null)reconnectTimer.Dispose();updateTip.Dispose();loginProfile.Password="";tray.Dispose();notificationIcon.Dispose();Icon.Dispose();};
             SetStatus("准备就绪");
             Shown+=delegate {
                 if(!demo){updateTimer=new System.Windows.Forms.Timer{Interval=1500};updateTimer.Tick+=delegate {updateTimer.Stop();CheckForUpdates(false);};updateTimer.Start();}
                 if(!demo && (autoStart || recover)) BeginInvoke(new Action(delegate {StartWorker(recover?"Restore":"Start");}));
             };
+        }
+        void HandleWindowClosing(object sender,FormClosingEventArgs e) {
+            if(allowClose)return;
+            if(e.CloseReason!=CloseReason.UserClosing) {
+                armed=false;CancelLogin();
+                if(running && !stopping)try{Directory.CreateDirectory(Program.Root);File.WriteAllText(Path.Combine(Program.Root,"stop.request"),DateTime.Now.ToString("o"));}catch{}
+                return;
+            }
+            e.Cancel=true;if(closePromptOpen)return;
+            DialogResult choice;closePromptOpen=true;
+            try{if(closePrompt!=null)choice=closePrompt();else using(var dialog=new CloseChoiceForm())choice=dialog.ShowDialog(this);}finally{closePromptOpen=false;}
+            if(choice==DialogResult.Yes){Hide();if(!demo)tray.Visible=true;}
+            else if(choice==DialogResult.No)BeginInvoke(new Action(delegate {StopWorker(true);}));
         }
         void CancelUpdates(){var previous=updateCancel;updateCancel=null;if(previous!=null){try{previous.Cancel();}catch(ObjectDisposedException){}}}
         void CheckForUpdates(bool manual) {
@@ -303,14 +308,23 @@ namespace GlobalProtectorWiFi {
             running=false;armed=false;recoveryNeeded=false;settingsTest=true;bool missingBlocked=!EnsureLoginForStart();settingsTest=false;
             loginProfile=new LoginProfile{Portal="vpn.example.com",Username="test-user",Password="test-password"};bool completeAllowed=EnsureLoginForStart();loginProfile=new LoginProfile();
             bool purpose=Descendants(this).Any(x=>x.Text.Contains("GlobalProtect") && x.Text.Contains("普通网络访问"));
-            return noInputs && idle && wait && ready && recovery && purpose && settingsTestPassed && missingBlocked && completeAllowed;
+            bool closeFlow=CheckCloseFlow();
+            return noInputs && idle && wait && ready && recovery && purpose && settingsTestPassed && missingBlocked && completeAllowed && closeFlow;
         }
+        bool CheckCloseFlow() {
+            ShowInTaskbar=false;Show();Application.DoEvents();running=true;armed=true;int prompts=0;
+            closePrompt=delegate {prompts++;return DialogResult.Cancel;};Close();
+            bool cancel=Visible && !IsDisposed && running && armed;
+            closePrompt=delegate {prompts++;return DialogResult.Yes;};Close();
+            bool minimize=!Visible && !IsDisposed && running && armed && !stopping;
+            Show();closePrompt=delegate {prompts++;return DialogResult.No;};Close();Application.DoEvents();
+            return cancel && minimize && IsDisposed && !armed && quitWhenStopped && prompts==3;
+        }
+        internal void RenderCloseDialog(string path){if(!demo)throw new InvalidOperationException();using(var dialog=new CloseChoiceForm()){dialog.Show();Application.DoEvents();using(var image=new Bitmap(dialog.Width,dialog.Height)){dialog.DrawToBitmap(image,new Rectangle(Point.Empty,image.Size));image.Save(path,System.Drawing.Imaging.ImageFormat.Png);}dialog.Hide();}}
         internal void RenderLoginSettings(string path){if(!demo)throw new InvalidOperationException();settingsPreview=path;ShowSettings(true);settingsPreview=null;}
         static IEnumerable<Control> Descendants(Control parent) {foreach(Control c in parent.Controls){yield return c;foreach(var d in Descendants(c)) yield return d;}}
         Label LabelAt(string text, int x, int y, int w, int h, float size, bool bold) { return new Label { Text = text, Bounds = new Rectangle(x,y,w,h), Font = new Font("Microsoft YaHei UI",size,bold?FontStyle.Bold:FontStyle.Regular), ForeColor = bold?ink:muted }; }
         void Style(Button b, bool primary) { b.FlatStyle = FlatStyle.Flat; b.FlatAppearance.BorderColor = primary?accent:Color.FromArgb(214,224,228); b.FlatAppearance.BorderSize = 1; b.BackColor = primary?accent:Color.White; b.ForeColor = primary?Color.White:ink; b.Cursor = Cursors.Hand; b.Font = new Font(Font,FontStyle.Bold); }
-        static Icon CreateIcon() { using(var b=new Bitmap(32,32)) using(var g=Graphics.FromImage(b)) { g.SmoothingMode=SmoothingMode.AntiAlias; g.Clear(Color.Transparent); using(var fill=new SolidBrush(Color.FromArgb(13,125,113))) g.FillEllipse(fill,1,1,30,30); using(var f=new Font("Segoe UI",18,FontStyle.Bold)) g.DrawString("G",f,Brushes.White,3,-1); var h=b.GetHicon(); try { return (Icon)Icon.FromHandle(h).Clone(); } finally { DestroyIcon(h); } } }
-        [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
         void SetStatus(string tag) {
 
             string status="未启动";
@@ -326,7 +340,6 @@ namespace GlobalProtectorWiFi {
             stateTitle.Text=status;
             bool warning=status=="需要恢复" || status=="连接失败" || status=="登录失败";
             stateTitle.ForeColor=warning?Color.FromArgb(184,102,35):ink;
-            heroMark.Tint=warning?Color.FromArgb(184,102,35):accent;heroMark.Invalidate();
             tray.Text="Global Protector · "+status;
             RefreshActions();
         }
@@ -336,7 +349,7 @@ namespace GlobalProtectorWiFi {
         }
         void LoadSettings() { try { string path=Path.Combine(Program.Root,"settings.json"); if(File.Exists(path)) { var d=Program.Json.Deserialize<Dictionary<string,string>>(File.ReadAllText(path)); targets.Text=d.ContainsKey("targets") && !String.IsNullOrWhiteSpace(d["targets"])?d["targets"]:Program.DefaultTarget; manualDns.Text=d.ContainsKey("dns")?d["dns"]:""; dnsMode.Checked=String.IsNullOrEmpty(manualDns.Text); } } catch { targets.Text=Program.DefaultTarget; Append("设置未读取，已使用预设目标。"); } }
         void SaveSettings(string[] list,string dns) { Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"settings.json"),Program.Json.Serialize(new Dictionary<string,string>{{"targets",String.Join(Environment.NewLine,list)},{"dns",dns}}),Encoding.UTF8); }
-        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-1.0.0.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
+        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-1.0.1.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
         void StartWorker(string mode, bool resume = false) {
             string loginSession=null;
             try {
@@ -390,8 +403,7 @@ namespace GlobalProtectorWiFi {
         }
         void WorkerEnded() {
             CancelLogin();running=false;
-            bool pending=false;
-            try { string path=Path.Combine(Program.Root,"state.json"); if(File.Exists(path)) { var saved=Program.Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(path)); pending=saved.ContainsKey("Stage") && Convert.ToString(saved["Stage"])!="restored"; } } catch { pending=true; }
+            bool pending=HasPendingRecovery();
             recoveryNeeded=pending;
             if(pending) { armed=false; quitWhenStopped=false; hadError=true; Show(); SetStatus("需要恢复"); }
             if(Lifecycle.ShouldRearm(armed,stopping,hadError,pending)) {
@@ -406,11 +418,15 @@ namespace GlobalProtectorWiFi {
             else if(!pending) SetStatus("已停止");
             if(quitWhenStopped && !pending) { allowClose=true; Close(); }
         }
+        bool HasPendingRecovery() {
+            try {string path=Path.Combine(Program.Root,"state.json");if(!File.Exists(path))return false;var saved=Program.Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(path));return saved==null || !saved.ContainsKey("Stage") || Convert.ToString(saved["Stage"])!="restored";}
+            catch{return true;}
+        }
         void StopWorker(bool quit) {
             CancelLogin();quitWhenStopped=quit; armed=false; if(reconnectTimer!=null) {reconnectTimer.Stop(); reconnectTimer.Dispose(); reconnectTimer=null;}
             if(demo) { allowClose=true; if(quit) Close(); return; }
             if(running) { if(stopping) return; stopping=true; Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"stop.request"),DateTime.Now.ToString("o")); SetStatus("恢复中"); }
-            else if(File.Exists(Path.Combine(Program.Root,"state.json"))) { StartWorker("Restore"); }
+            else if(HasPendingRecovery()) { StartWorker("Restore"); }
             else if(quit) { allowClose=true; Close(); }
         }
         void OpenLogs() { Directory.CreateDirectory(Program.Root); Process.Start("explorer.exe",Program.Root); }

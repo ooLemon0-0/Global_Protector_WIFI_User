@@ -1,3 +1,5 @@
+<img src="assets/logo.svg" width="72" height="72" alt="Global Protector WiFi logo">
+
 # Global Protector WiFi
 
 轻量、免安装的 Windows 分流助手，让 GlobalProtect 远程访问与日常上网并行。
@@ -6,7 +8,7 @@
 
 ## 下载与使用
 
-在 [最新正式版](https://github.com/ooLemon0-0/Global_Protector_WIFI_User/releases/latest) 下载 `GlobalProtectorWiFi.exe` 或便携 ZIP。源码 ZIP 供开发者构建，不能替代 EXE。当前正式版为 **v1.0.0**。
+在 [最新正式版](https://github.com/ooLemon0-0/Global_Protector_WIFI_User/releases/latest) 下载 `GlobalProtectorWiFi.exe` 或便携 ZIP。源码 ZIP 供开发者构建，不能替代 EXE。当前正式版为 **v1.0.1**。
 
 1. **先断开 GlobalProtect**，打开助手。
 2. 默认分流目标为 **`10.213.134.31`**。需要调整时在 **登录设置 → 网络** 中修改目标地址和 DNS；已有配置继续保留。
@@ -18,6 +20,12 @@
 8. 要结束待命，点击 **停止**，或在托盘中选择 **退出并恢复**。
 
 启动时自动打开 GlobalProtect 和辅助登录固定启用，没有关闭选项。设置和日志入口位于窗口底部；停止、退出和恢复网络无需重新填写登录信息。
+
+## 关闭窗口
+
+![关闭选择](docs/close-dialog.png)
+
+点击窗口右上角关闭按钮或按 Alt+F4 时，选择 **最小化到托盘** 或 **退出**。最小化保留助手运行，双击托盘图标可重新打开；退出会先停止工作并恢复临时网络设置。按 Esc 或关闭选择窗口可取消操作。若网络恢复失败，助手保留运行并提示恢复。
 
 ## 检查更新
 
@@ -90,6 +98,8 @@ GlobalProtect 需预先安装。程序未进行商业代码签名，请校验发
 ```
 
 输出为 `dist/GlobalProtectorWiFi.exe`。使用 Windows 自带 C# 编译器，不需要 NuGet、Node.js、Python 或额外的 .NET SDK。`src/Engine.ps1` 作为资源嵌入。
+
+`assets/logo.svg` 为矢量 Logo，`assets/app.ico` 包含 16～256 像素的九种 Windows 图标尺寸，并嵌入 EXE、窗口与托盘。修改图形后可运行 `./tools/Build-Branding.ps1` 重新生成 PNG 和 ICO；图形渲染源码位于 `tools/BrandRenderer.cs`。
 
 测试使用模拟网卡、路由和 DNS，验证修改范围、事务回退、重复 DNS、输入校验与异常状态；**不会对测试机器执行真实网络修改**。界面可用 `GlobalProtectorWiFi.exe --demo` 只读预览。
 

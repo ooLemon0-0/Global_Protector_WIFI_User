@@ -18,6 +18,10 @@ foreach($assembly in @('UIAutomationClient.dll','UIAutomationTypes.dll','Windows
 $arguments+='/reference:System.Security.dll'
 $arguments+=(Join-Path $root 'src\Login.cs')
 $arguments+=(Join-Path $root 'src\Updates.cs')
+$arguments+=(Join-Path $root 'src\Branding.cs')
+$arguments+=('/win32icon:'+(Join-Path $root 'assets\app.ico'))
+$arguments+=('/resource:'+(Join-Path $root 'assets\app.ico')+',App.ico')
+$arguments+=('/resource:'+(Join-Path $root 'assets\logo.png')+',Logo.png')
 & $compiler @arguments
 if($LASTEXITCODE -ne 0) { throw 'C# compilation failed.' }
 Copy-Item (Join-Path $root 'README.md'),(Join-Path $root 'LICENSE') -Destination $out -ErrorAction SilentlyContinue
@@ -45,6 +49,6 @@ if($Test) {
     $uiReport=Join-Path $testBin 'ui-state.txt'
     $uiTest=Start-Process -FilePath $exe -ArgumentList @('--ui-self-test',('"'+$uiReport+'"')) -WindowStyle Hidden -PassThru
     if(-not $uiTest.WaitForExit(15000) -or $uiTest.ExitCode -ne 0 -or (Get-Content $uiReport -Raw).Trim() -ne 'passed') { throw 'UI state regression checks failed.' }
-    'PASS: main screen states, mandatory login prompt, disabled incomplete submit and completed-login startup gate.'
+    'PASS: main screen states, mandatory login gate, close cancellation, minimize preserving the active session and explicit exit.'
 }
 Write-Output $exe
