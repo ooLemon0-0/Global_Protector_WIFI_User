@@ -16,10 +16,11 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Global Protector WiFi")]
 [assembly: AssemblyDescription("Independent GlobalProtect split-routing companion")]
-[assembly: AssemblyVersion("0.1.1.0")]
-[assembly: AssemblyFileVersion("0.1.1.0")]
+[assembly: AssemblyVersion("0.1.2.0")]
+[assembly: AssemblyFileVersion("0.1.2.0")]
 namespace GlobalProtectorWiFi {
     internal static class Program {
+        internal const string DefaultTarget = "10.213.134.31";
         internal static readonly string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlobalProtectorWiFi");
         internal static readonly JavaScriptSerializer Json = new JavaScriptSerializer();
         internal static bool Admin { get { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); } }
@@ -101,7 +102,7 @@ namespace GlobalProtectorWiFi {
             header.Controls.Add(logo);
             header.Controls.Add(LabelAt("Global Protector", 68, 3, 400, 30, 19, true));
             header.Controls.Add(LabelAt("VPN 内网与日常上网，各走其路。", 70, 38, 440, 24, 10, false));
-            var version = LabelAt("v0.1.1", 620, 14, 90, 25, 9, false); version.TextAlign = ContentAlignment.MiddleRight; version.Anchor = AnchorStyles.Top | AnchorStyles.Right; header.Controls.Add(version);
+            var version = LabelAt("v0.1.2", 620, 14, 90, 25, 9, false); version.TextAlign = ContentAlignment.MiddleRight; version.Anchor = AnchorStyles.Top | AnchorStyles.Right; header.Controls.Add(version);
             layout.Controls.Add(header, 0, 0);
             var status = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12), Surface = Color.FromArgb(235, 246, 243) };
             badge.SetBounds(20, 17, 620, 20); badge.Font = new Font(Font, FontStyle.Bold); badge.ForeColor = accent;
@@ -112,7 +113,7 @@ namespace GlobalProtectorWiFi {
             settings.Controls.Add(LabelAt("VPN 内网目标 IP", 20, 14, 250, 24, 10, true));
             targets.Multiline = true; targets.ScrollBars = ScrollBars.Vertical; targets.SetBounds(20, 44, 415, 66); targets.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right; targets.Font = new Font("Consolas", 11); targets.AccessibleName = "VPN 内网目标 IPv4 地址";
             settings.Controls.Add(targets);
-            settings.Controls.Add(LabelAt("填写远程电脑地址；多个 IP 用逗号或换行分隔。", 20, 115, 660, 23, 8.5F, false));
+            settings.Controls.Add(LabelAt("已预设分流目标，通常无需修改；其他目标可用逗号或换行添加。", 20, 115, 660, 23, 8.5F, false));
             settings.Controls.Add(LabelAt("DNS", 20, 147, 45, 26, 9, true));
             dnsMode.Text = "自动选择 VPN 可用 DNS"; dnsMode.Checked = true; dnsMode.SetBounds(65, 144, 245, 28); dnsMode.AccessibleName = "DNS 选择方式";
             manualDns.SetBounds(325, 144, 190, 28); manualDns.Font = new Font("Consolas", 10); manualDns.Enabled = false; manualDns.AccessibleName = "指定 VPN DNS 地址";
@@ -158,7 +159,9 @@ namespace GlobalProtectorWiFi {
             tray.Icon = Icon; tray.Text = "Global Protector · 就绪"; tray.ContextMenuStrip = menu; tray.DoubleClick += delegate { Show(); WindowState = FormWindowState.Normal; Activate(); };
             FormClosing += delegate(object s, FormClosingEventArgs e) { if (!allowClose && (running || armed)) { e.Cancel = true; Hide(); tray.Visible = true; tray.ShowBalloonTip(2000, "助手继续运行", "可在托盘中停止分流或退出并恢复。", ToolTipIcon.Info); } };
             FormClosed += delegate { tray.Dispose(); };
-            LoadSettings(); SetStatus("就绪", "先开启助手，再连接 VPN", "准备好VPN 内网目标 IP 后点击“开启助手”。分流期间可最小化到系统托盘。");
+            targets.Text=Program.DefaultTarget;
+            if(!demo) LoadSettings();
+            SetStatus("就绪", "先开启助手，再连接 VPN", "已配置分流目标，直接点击“开启助手”即可。分流期间可最小化到系统托盘。");
             Shown += delegate { if (!demo && (autoStart || recover)) BeginInvoke(new Action(delegate { StartWorker(recover?"Restore":"Start"); })); };
         }
         Label LabelAt(string text, int x, int y, int w, int h, float size, bool bold) { return new Label { Text = text, Bounds = new Rectangle(x,y,w,h), Font = new Font("Microsoft YaHei UI",size,bold?FontStyle.Bold:FontStyle.Regular), ForeColor = bold?ink:muted }; }
@@ -167,13 +170,14 @@ namespace GlobalProtectorWiFi {
         [System.Runtime.InteropServices.DllImport("user32.dll")] static extern bool DestroyIcon(IntPtr h);
         void SetStatus(string tag,string title,string detail) { badge.Text = "●  " + tag; stateTitle.Text = title; stateDetail.Text = detail; tray.Text = ("Global Protector · " + tag).Substring(0,Math.Min(63,("Global Protector · " + tag).Length)); }
         void Append(string message) { log.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + message + Environment.NewLine); }
-        void LoadSettings() { try { string path=Path.Combine(Program.Root,"settings.json"); if(File.Exists(path)) { var d=Program.Json.Deserialize<Dictionary<string,string>>(File.ReadAllText(path)); targets.Text=d.ContainsKey("targets")?d["targets"]:""; manualDns.Text=d.ContainsKey("dns")?d["dns"]:""; dnsMode.Checked=String.IsNullOrEmpty(manualDns.Text); autoOpen.Checked=!d.ContainsKey("autoOpen") || d["autoOpen"]=="true"; } } catch { Append("设置未读取，填写地址后即可开始。"); } }
+        void LoadSettings() { try { string path=Path.Combine(Program.Root,"settings.json"); if(File.Exists(path)) { var d=Program.Json.Deserialize<Dictionary<string,string>>(File.ReadAllText(path)); targets.Text=d.ContainsKey("targets") && !String.IsNullOrWhiteSpace(d["targets"])?d["targets"]:Program.DefaultTarget; manualDns.Text=d.ContainsKey("dns")?d["dns"]:""; dnsMode.Checked=String.IsNullOrEmpty(manualDns.Text); autoOpen.Checked=!d.ContainsKey("autoOpen") || d["autoOpen"]=="true"; } } catch { targets.Text=Program.DefaultTarget; Append("设置未读取，已使用预设目标。"); } }
         void SaveSettings(string[] list,string dns) { Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"settings.json"),Program.Json.Serialize(new Dictionary<string,string>{{"targets",String.Join(Environment.NewLine,list)},{"dns",dns},{"autoOpen",autoOpen.Checked?"true":"false"}}),Encoding.UTF8); }
-        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.1.1.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
+        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.1.2.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
         void StartWorker(string mode, bool resume = false) {
             try {
                 if (demo) { Append("预览模式仅展示界面，不执行网络修改。"); return; }
                 if (running) return;
+                if(mode=="Start" && String.IsNullOrWhiteSpace(targets.Text)) targets.Text=Program.DefaultTarget;
                 string[] list=mode=="Start"?InputRules.Parse(targets.Text,false):new string[0]; string dns="";
                 if(mode=="Start" && !dnsMode.Checked) { var parsed=InputRules.Parse(manualDns.Text,false); if(parsed.Length!=1) throw new ArgumentException("指定 DNS 只需填写一个 IPv4 地址。"); dns=parsed[0]; }
                 if(mode=="Start") SaveSettings(list,dns);

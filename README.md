@@ -9,7 +9,7 @@
 在 [Releases](https://github.com/ooLemon0-0/Global_Protector_WIFI_User/releases) 下载 `GlobalProtectorWiFi.exe` 或便携 ZIP。源码 ZIP 供开发者构建，不能替代 EXE。
 
 1. **先断开 GlobalProtect**，打开助手。
-2. 填写远程电脑的 **IPv4 地址**。多个地址可用逗号或换行分隔，最多 16 个。这里填写远程电脑地址，不是 VPN 登录地址。
+2. 默认分流目标已预设为 **`10.213.134.31`**，无需输入即可开启。需要访问其他目标时可修改或添加 IPv4 地址，最多 16 个；已保存的自定义目标会继续保留。这是内网分流目标，不是 VPN 登录地址。
 3. 点击 **开启助手**，允许 Windows 管理员权限提示。
 4. 看到“现在可以连接 GlobalProtect”后，正常登录 VPN。断网期间，助手仍在本机继续工作。
 5. 等待“分流正常”，之后照常使用自己的远程桌面或其他软件。助手不负责连接远程桌面。可最小化到系统托盘，**保留助手运行**。
@@ -27,7 +27,7 @@ GlobalProtect 需由公司提供并预先安装。工具不会处理账号、密
 ## 工作原理
 
 - 自动识别 GlobalProtect 的 PANGP 虚拟网卡，以及连接前的物理 Wi-Fi / 以太网默认路由。
-- 为填写的每个远程 IP 添加临时 `/32` 主机路由，经 VPN 访问。
+- 为默认或自定义的每个远程 IP 添加临时 `/32` 主机路由，经 VPN 访问。默认目标在 `src/Program.cs` 的 `Program.DefaultTarget` 中配置；清空输入后点击开启也会使用默认目标。
 - 只移除 GlobalProtect 的 IPv4 默认路由，保留原物理网络默认路由。**其他已由 VPN 下发的内网路由保留**。
 - 从 VPN 下发且具有隧道路由的 DNS 中，探测可解析公网域名的服务器，临时用于 VPN 网卡。也可指定其中一个 DNS。
 - 保留 VPN DNS 的隧道路由。它并非“只让 mstsc.exe 走 VPN”：访问指定 IP 的所有端口，以及 DNS，仍经过 VPN。
