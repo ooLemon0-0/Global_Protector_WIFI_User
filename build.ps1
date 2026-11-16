@@ -32,13 +32,13 @@ if($Test) {
     & $testExe
     if($LASTEXITCODE -ne 0) { throw 'Frontend input tests failed.' }
     $loginTest=Join-Path $testBin 'LoginTests.exe'
-    & $compiler /nologo /codepage:65001 /target:exe ('/reference:'+$exe) ('/out:'+$loginTest) (Join-Path $root 'tests\LoginTests.cs')
+    & $compiler /nologo /codepage:65001 /target:exe /reference:System.Web.Extensions.dll ('/reference:'+$exe) ('/out:'+$loginTest) (Join-Path $root 'tests\LoginTests.cs')
     if($LASTEXITCODE -ne 0) { throw 'Login test compilation failed.' }
     & $loginTest
     if($LASTEXITCODE -ne 0) { throw 'Login / credential storage tests failed.' }
     $uiReport=Join-Path $testBin 'ui-state.txt'
     $uiTest=Start-Process -FilePath $exe -ArgumentList @('--ui-self-test',('"'+$uiReport+'"')) -WindowStyle Hidden -PassThru
     if(-not $uiTest.WaitForExit(15000) -or $uiTest.ExitCode -ne 0 -or (Get-Content $uiReport -Raw).Trim() -ne 'passed') { throw 'UI state regression checks failed.' }
-    'PASS: main screen has no input fields; start, wait, stop and recovery states are consistent.'
+    'PASS: main screen states, mandatory login prompt, disabled incomplete submit and completed-login startup gate.'
 }
 Write-Output $exe

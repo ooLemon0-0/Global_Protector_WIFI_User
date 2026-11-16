@@ -9,22 +9,22 @@
 在 [Releases](https://github.com/ooLemon0-0/Global_Protector_WIFI_User/releases) 下载 `GlobalProtectorWiFi.exe` 或便携 ZIP。源码 ZIP 供开发者构建，不能替代 EXE。
 
 1. **先断开 GlobalProtect**，打开助手。
-2. 主界面无需填写参数，默认分流目标为 **`10.213.134.31`**。需要调整时在 **设置** 中修改目标地址、DNS 和自动打开 VPN 的选项；已有配置继续保留。
-3. 需要辅助登录时，先打开 **登录设置 → VPN 登录**，核对门户并手动输入账号密码，勾选 **自动填写并连接**；可选 **记住登录信息**。不启用时仍可在官方客户端手动登录。
-4. 点击 **启动**，允许 Windows 管理员权限提示。
-5. 看到“等待 VPN”后，正常登录 VPN。断网期间，助手仍在本机继续工作。
+2. 默认分流目标为 **`10.213.134.31`**。需要调整时在 **登录设置 → 网络** 中修改目标地址和 DNS；已有配置继续保留。
+3. 点击 **启动**。未填写完整时会弹出 VPN 登录窗口，门户、账号、密码均为必填；填完整后才可点击窗口中的 **启动**。取消填写不会启动助手，也不会申请管理员权限或修改网络。
+4. 可选 **记住登录信息**，下次在当前 Windows 用户下无需重复填写。允许 Windows 管理员权限提示后，助手自动打开 GlobalProtect、点击连接并尝试填写、提交原生登录窗口，无需勾选自动连接。
+5. 需要网页、验证码或证书确认时，按提示手动处理。断网期间，助手仍在本机继续工作。
 6. 等待“已连接”，之后照常使用自己的远程桌面或其他软件。助手不负责连接远程桌面。可最小化到系统托盘，**保留助手运行**。
 7. 断开 VPN 后会自动撤销临时修改，并继续等待下次连接。正常重连会重新检测与应用分流，无需重启助手。
 8. 要结束待命，点击 **停止**，或在托盘中选择 **退出并恢复**。
 
-“自动打开 GlobalProtect”默认选中，只负责打开已安装的 GlobalProtect；也可以手动打开客户端。设置和日志入口位于窗口底部。
+启动时自动打开 GlobalProtect 和辅助登录固定启用，没有关闭选项。设置和日志入口位于窗口底部；停止、退出和恢复网络无需重新填写登录信息。
 
 ## 辅助登录与凭据保存
 
 ![登录设置](docs/login-settings.png)
 
-- 在登录设置中预输入门户、账号、密码；密码框遮挡输入。
-- 勾选“自动填写并连接”后，启动助手会打开已安装的 GlobalProtect，尝试点击连接、识别原生账号密码窗口、填写并提交一次。
+- 在登录设置中预输入门户、账号、密码；密码框遮挡输入。缺少任意一项均不能继续启动。
+- 启动助手会自动打开已安装的 GlobalProtect，尝试点击连接、识别原生账号密码窗口、填写并提交一次。旧版的自动连接关闭设置不再生效。
 - 仅接受与当前配置相同的门户，目标程序必须是官方服务所指向、签名有效且签发组织为 Palo Alto Networks 的 PanGPA.exe，并且运行在相同 Windows 用户和会话中。不会把密码填入浏览器或其他进程。
 - 网页 / SAML、验证码 / MFA、代理密码和不明确的窗口交回用户处理。证书确认不会自动接受，需用户自行核验；确认后若出现兼容的原生登录窗口，可继续填写。
 - 每轮最多提交一次用户名和密码，不会反复尝试错误密码。VPN 断开后的待命阶段不会擅自点击连接；用户手动发起重连时可以继续处理新的原生登录窗口。
@@ -88,7 +88,7 @@ GitHub Actions 会在推送时构建和测试；推送 `v*` 标签时构建带�
 
 ## English
 
-A small portable Windows companion for GlobalProtect. It keeps the physical internet default route, adds selected IPv4 target routes through the VPN, and chooses a working VPN-provided DNS server. It retains other VPN-provided routes, needs administrator rights to change networking, and must remain running for restoration. It is not an official Palo Alto Networks product and cannot override every corporate policy. Optional native-dialog login assistance is portal-bound and limited to a verified vendor-signed client under the same Windows user. Credentials entered by the user can be stored locally with Windows DPAPI CurrentUser; they are not logged or uploaded. Browser/SAML, MFA and certificate decisions remain manual. No telemetry is collected.
+A small portable Windows companion for GlobalProtect. It keeps the physical internet default route, adds selected IPv4 target routes through the VPN, and chooses a working VPN-provided DNS server. It retains other VPN-provided routes, needs administrator rights to change networking, and must remain running for restoration. It is not an official Palo Alto Networks product and cannot override every corporate policy. Starting requires a portal, username and password; missing details open a mandatory login dialog before elevation or network changes. Native-dialog login assistance is always enabled, portal-bound and limited to a verified vendor-signed client under the same Windows user. Credentials entered by the user can be stored locally with Windows DPAPI CurrentUser; they are not logged or uploaded. Browser/SAML, MFA and certificate decisions remain manual. No telemetry is collected.
 
 ## License
 

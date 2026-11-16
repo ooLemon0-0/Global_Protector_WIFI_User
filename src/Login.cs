@@ -14,8 +14,8 @@ using Microsoft.Win32;
 namespace GlobalProtectorWiFi {
     public sealed class LoginProfile {
         public string Portal="", Username="", Password="";
-        public bool Enabled, Remember;
-        public LoginProfile Copy(){return new LoginProfile{Portal=Portal,Username=Username,Password=Password,Enabled=Enabled,Remember=Remember};}
+        public bool Remember;
+        public LoginProfile Copy(){return new LoginProfile{Portal=Portal,Username=Username,Password=Password,Remember=Remember};}
     }
     public static class LoginRules {
         public static string PortalKey(string text) {
@@ -25,10 +25,12 @@ namespace GlobalProtectorWiFi {
             return uri.IdnHost.ToLowerInvariant()+(uri.IsDefaultPort?"":":"+uri.Port);
         }
         public static void Validate(LoginProfile profile) {
-            if(!profile.Enabled)return;
+            if(profile==null || String.IsNullOrWhiteSpace(profile.Portal))throw new ArgumentException("请填写 VPN 门户地址。");
             PortalKey(profile.Portal);
-            if(String.IsNullOrWhiteSpace(profile.Username) || profile.Username.Length>256 || String.IsNullOrEmpty(profile.Password) || profile.Password.Length>1024)throw new ArgumentException("请填写账号和密码。");
+            if(String.IsNullOrWhiteSpace(profile.Username) || profile.Username.Length>256)throw new ArgumentException("请填写账号。");
+            if(String.IsNullOrWhiteSpace(profile.Password) || profile.Password.Length>1024)throw new ArgumentException("请填写密码。");
         }
+        public static bool IsComplete(LoginProfile profile){try{Validate(profile);return true;}catch(ArgumentException){return false;}}
         public static string Decide(bool trusted,bool portalMatches,bool blocked,int users,int passwords,bool submit,bool connect,bool allowConnect) {
             if(!trusted || !portalMatches || blocked)return "manual";
             if(passwords>0)return users==1 && passwords==1 && submit?"credentials":"manual";

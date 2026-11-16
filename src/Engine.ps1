@@ -16,7 +16,7 @@ $script:Runtime=$DataDirectory
 $script:StatePath=Join-Path $script:Runtime 'state.json'
 $script:StopPath=Join-Path $script:Runtime 'stop.request'
 $script:LogPath=Join-Path $script:Runtime 'events.jsonl'
-$script:ToolVersion='0.3.0'
+$script:ToolVersion='0.3.1'
 
 function Write-Event([string]$Event,$Data) {
     $line=[ordered]@{Time=(Get-Date).ToString('o');Event=$Event;Data=$Data} | ConvertTo-Json -Depth 9 -Compress
