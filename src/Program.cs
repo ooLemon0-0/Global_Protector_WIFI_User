@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Global Protector WiFi")]
 [assembly: AssemblyDescription("Independent GlobalProtect split-routing companion")]
-[assembly: AssemblyVersion("0.2.0.0")]
-[assembly: AssemblyFileVersion("0.2.0.0")]
+[assembly: AssemblyVersion("0.3.0.0")]
+[assembly: AssemblyFileVersion("0.3.0.0")]
 namespace GlobalProtectorWiFi {
     internal static class Program {
         internal const string DefaultTarget = "10.213.134.31";
@@ -28,6 +28,7 @@ namespace GlobalProtectorWiFi {
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
             if((args.Length==2 || args.Length==3) && args[0]=="--render-preview") {
                 using(var form=new MainForm(false,true,false)) {
+                    if(args.Length==3 && args[2]=="login"){form.RenderLoginSettings(args[1]);return 0;}
                     form.Show(); if(args.Length==3)form.PreviewState(args[2]); Application.DoEvents();
                     using(var bitmap=new Bitmap(form.Width,form.Height)) { form.DrawToBitmap(bitmap,new Rectangle(Point.Empty,bitmap.Size)); bitmap.Save(args[1],System.Drawing.Imaging.ImageFormat.Png); }
                     form.Hide();
@@ -44,7 +45,8 @@ namespace GlobalProtectorWiFi {
                     try { acquired = mutex.WaitOne(3000); } catch (AbandonedMutexException) { acquired = true; }
                     if (!acquired) { MessageBox.Show("助手已在运行，请在任务栏或系统托盘打开。", "Global Protector"); return 1; }
                     Application.ThreadException += delegate(object s, ThreadExceptionEventArgs e) { MessageBox.Show(e.Exception.Message, "操作未完成"); };
-                    Application.Run(new MainForm(args.Contains("--autostart"), args.Contains("--demo"), args.Contains("--recover")));
+                    string session=args.FirstOrDefault(x=>x.StartsWith("--login-session=",StringComparison.Ordinal));
+                    Application.Run(new MainForm(args.Contains("--autostart"), args.Contains("--demo"), args.Contains("--recover"),session==null?null:session.Substring(16)));
                 } catch (Exception e) { MessageBox.Show(e.Message, "Global Protector"); return 1; }
                 finally { if (acquired) mutex.ReleaseMutex(); }
             }
@@ -112,26 +114,30 @@ namespace GlobalProtectorWiFi {
         readonly WifiMark heroMark = new WifiMark();
         TextBox visibleLog;
         bool recoveryNeeded;
-        public MainForm(bool auto, bool preview, bool recover) {
+        LoginProfile loginProfile=new LoginProfile();
+        CancellationTokenSource loginCancel;bool loginAttempted,resumeCycle;
+        string settingsPreview;bool settingsTest,settingsTestPassed;
+        public MainForm(bool auto, bool preview, bool recover,string handoff=null) {
             autoStart=auto; demo=preview;
-            Text="Global Protector"; ClientSize=new Size(360,300);
+            Text="Global Protector"; ClientSize=new Size(400,344);
             FormBorderStyle=FormBorderStyle.FixedSingle; MaximizeBox=false;
             StartPosition=FormStartPosition.CenterScreen; BackColor=Color.White; ForeColor=ink;
             Font=new Font("Microsoft YaHei UI",9F); AutoScaleDimensions=new SizeF(96,96); AutoScaleMode=AutoScaleMode.Dpi;
             Icon=CreateIcon();
-            heroMark.SetBounds(144,28,72,72); Controls.Add(heroMark);
-            stateTitle.SetBounds(24,113,312,38); stateTitle.TextAlign=ContentAlignment.MiddleCenter;
+            Controls.Add(LabelAt("连接 GlobalProtect 时保留普通网络访问",24,17,352,30,9,false));
+            heroMark.SetBounds(164,63,72,72); Controls.Add(heroMark);
+            stateTitle.SetBounds(24,148,352,38); stateTitle.TextAlign=ContentAlignment.MiddleCenter;
             stateTitle.Font=new Font("Microsoft YaHei UI",18,FontStyle.Bold); Controls.Add(stateTitle);
-            start.SetBounds(24,177,312,44); Style(start,true);start.Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold);
+            start.SetBounds(24,213,352,44); Style(start,true);start.Font=new Font("Microsoft YaHei UI",10,FontStyle.Bold);
             start.AccessibleName="启动或停止";
             start.Click+=delegate {if(recoveryNeeded) StartWorker("Restore"); else if(running || armed) StopWorker(false); else StartWorker("Start");};
             Controls.Add(start); AcceptButton=start;
-            Controls.Add(new Panel {Bounds=new Rectangle(24,246,312,1),BackColor=Color.FromArgb(233,237,240)});
-            settingsButton.Text="设置";StyleLink(settingsButton);settingsButton.SetBounds(18,258,64,27);settingsButton.Click+=delegate {ShowSettings();};
-            var history=new Button {Text="日志"};StyleLink(history);history.SetBounds(86,258,64,27);history.Click+=delegate {ShowHistory();};
+            Controls.Add(new Panel {Bounds=new Rectangle(24,287,352,1),BackColor=Color.FromArgb(233,237,240)});
+            settingsButton.Text="登录设置";StyleLink(settingsButton);settingsButton.SetBounds(18,300,88,27);settingsButton.Click+=delegate {ShowSettings();};
+            var history=new Button {Text="日志"};StyleLink(history);history.SetBounds(110,300,64,27);history.Click+=delegate {ShowHistory();};
             Controls.Add(settingsButton);Controls.Add(history);
             targets.Text=Program.DefaultTarget; dnsMode.Checked=true; autoOpen.Checked=true;
-            if(!demo) LoadSettings();
+            if(!demo) {LoadSettings();LoadLogin(handoff);}
 
             var menu=new ContextMenuStrip();
             menu.Items.Add("显示助手",null,delegate {Show();WindowState=FormWindowState.Normal;Activate();});
@@ -142,7 +148,7 @@ namespace GlobalProtectorWiFi {
             FormClosing+=delegate(object s,FormClosingEventArgs e) {
                 if(!allowClose && (running || armed)) {e.Cancel=true;Hide();tray.Visible=true;tray.ShowBalloonTip(1800,"已最小化到托盘","右键菜单可停止或退出。",ToolTipIcon.Info);}
             };
-            FormClosed+=delegate {tray.Dispose();};
+            FormClosed+=delegate {CancelLogin();loginProfile.Password="";tray.Dispose();};
             SetStatus("准备就绪");
             Shown+=delegate {if(!demo && (autoStart || recover)) BeginInvoke(new Action(delegate {StartWorker(recover?"Restore":"Start");}));};
         }
@@ -159,30 +165,57 @@ namespace GlobalProtectorWiFi {
             settingsButton.Enabled=!running && !armed && !recoveryNeeded;
         }
         void ShowSettings() {
-            if(running || armed || recoveryNeeded) return;
-            using(var dialog=new Form {Text="设置",ClientSize=new Size(436,304),FormBorderStyle=FormBorderStyle.FixedDialog,MaximizeBox=false,MinimizeBox=false,StartPosition=FormStartPosition.CenterParent,Font=Font,BackColor=Color.White,Icon=Icon}) {
-                dialog.Controls.Add(LabelAt("目标地址",22,20,390,23,9,true));
-                var editTargets=new TextBox {Multiline=true,Text=targets.Text,Bounds=new Rectangle(22,50,392,65),Font=new Font("Consolas",10)};
-                dialog.Controls.Add(editTargets);
-                var chooseDns=new CheckBox {Text="自动选择 DNS",Checked=dnsMode.Checked,Bounds=new Rectangle(22,139,235,25)};
-                var editDns=new TextBox {Text=manualDns.Text,Bounds=new Rectangle(273,139,140,25),Enabled=!chooseDns.Checked};
-                chooseDns.CheckedChanged+=delegate {editDns.Enabled=!chooseDns.Checked;};
-                var chooseOpen=new CheckBox {Text="自动打开 GlobalProtect",Checked=autoOpen.Checked,Bounds=new Rectangle(22,180,392,28)};
-                dialog.Controls.AddRange(new Control[]{chooseDns,editDns,chooseOpen});
-                var cancel=new SoftButton {Text="取消",Bounds=new Rectangle(188,242,105,40),DialogResult=DialogResult.Cancel};Style(cancel,false);
-                var save=new SoftButton {Text="保存",Bounds=new Rectangle(305,242,109,40)};Style(save,true);
+            if(running || armed || recoveryNeeded)return;
+            using(var dialog=new Form {Text="设置",ClientSize=new Size(486,460),FormBorderStyle=FormBorderStyle.FixedDialog,MaximizeBox=false,MinimizeBox=false,StartPosition=FormStartPosition.CenterParent,Font=Font,BackColor=Color.White,Icon=Icon}) {
+                var tabs=new TabControl {Bounds=new Rectangle(16,16,454,374)};
+                var loginTab=new TabPage("VPN 登录");var networkTab=new TabPage("网络");tabs.TabPages.Add(loginTab);tabs.TabPages.Add(networkTab);dialog.Controls.Add(tabs);
+                loginTab.Controls.Add(LabelAt("VPN 门户",16,15,400,22,9,true));
+                var portal=new TextBox {Text=loginProfile.Portal,Bounds=new Rectangle(16,41,410,26)};loginTab.Controls.Add(portal);
+                loginTab.Controls.Add(LabelAt("账号",16,81,400,22,9,true));
+                var username=new TextBox {Text=loginProfile.Username,MaxLength=256,Bounds=new Rectangle(16,107,410,26)};loginTab.Controls.Add(username);
+                loginTab.Controls.Add(LabelAt("密码",16,147,400,22,9,true));
+                var password=new TextBox {Text=loginProfile.Password,UseSystemPasswordChar=true,MaxLength=1024,Bounds=new Rectangle(16,173,410,26)};loginTab.Controls.Add(password);
+                var autoLogin=new CheckBox {Text="自动填写并连接",Checked=loginProfile.Enabled,Bounds=new Rectangle(16,215,410,26)};
+                var remember=new CheckBox {Text="记住登录信息（当前 Windows 用户）",Checked=loginProfile.Remember,Bounds=new Rectangle(16,247,410,26)};
+                loginTab.Controls.AddRange(new Control[]{autoLogin,remember});
+                loginTab.Controls.Add(LabelAt("仅支持原生账号密码窗口；网页、验证码和证书确认需手动处理。",16,288,410,43,8.5F,false));
+
+                networkTab.Controls.Add(LabelAt("目标地址",16,15,410,22,9,true));
+                var editTargets=new TextBox {Multiline=true,Text=targets.Text,Bounds=new Rectangle(16,44,410,65),Font=new Font("Consolas",10)};networkTab.Controls.Add(editTargets);
+                var chooseDns=new CheckBox {Text="自动选择 DNS",Checked=dnsMode.Checked,Bounds=new Rectangle(16,139,230,25)};
+                var editDns=new TextBox {Text=manualDns.Text,Bounds=new Rectangle(276,139,150,25),Enabled=!chooseDns.Checked};chooseDns.CheckedChanged+=delegate {editDns.Enabled=!chooseDns.Checked;};
+                var chooseOpen=new CheckBox {Text="自动打开 GlobalProtect",Checked=autoOpen.Checked,Bounds=new Rectangle(16,181,410,28)};networkTab.Controls.AddRange(new Control[]{chooseDns,editDns,chooseOpen});
+                var cancel=new SoftButton {Text="取消",Bounds=new Rectangle(240,406,105,38),DialogResult=DialogResult.Cancel};Style(cancel,false);
+                var save=new SoftButton {Text="保存",Bounds=new Rectangle(357,406,113,38)};Style(save,true);
                 save.Click+=delegate {
                     try {
-                        string value=String.IsNullOrWhiteSpace(editTargets.Text)?Program.DefaultTarget:editTargets.Text;
-                        var list=InputRules.Parse(value,false);string selectedDns="";
-                        if(!chooseDns.Checked) {var parsed=InputRules.Parse(editDns.Text,false);if(parsed.Length!=1) throw new ArgumentException("指定 DNS 只需填写一个地址。");selectedDns=parsed[0];}
-                        if(!demo) SaveSettings(list,selectedDns,chooseOpen.Checked);
-                        targets.Text=String.Join(Environment.NewLine,list);manualDns.Text=selectedDns;dnsMode.Checked=chooseDns.Checked;autoOpen.Checked=chooseOpen.Checked;
-                        dialog.DialogResult=DialogResult.OK;
-                    } catch(Exception e) {MessageBox.Show(dialog,e.Message,"请检查设置",MessageBoxButtons.OK,MessageBoxIcon.Information);}
+                        var next=new LoginProfile {Portal=portal.Text.Trim(),Username=username.Text.Trim(),Password=password.Text,Enabled=autoLogin.Checked,Remember=remember.Checked};LoginRules.Validate(next);
+                        string value=String.IsNullOrWhiteSpace(editTargets.Text)?Program.DefaultTarget:editTargets.Text;var list=InputRules.Parse(value,false);string selectedDns="";
+                        if(!chooseDns.Checked){var parsed=InputRules.Parse(editDns.Text,false);if(parsed.Length!=1)throw new ArgumentException("指定 DNS 只需填写一个地址。");selectedDns=parsed[0];}
+                        if(!demo){SaveSettings(list,selectedDns,chooseOpen.Checked);try{if(next.Remember)CredentialVault.Write(CredentialVault.SavedPath,next);else if(File.Exists(CredentialVault.SavedPath))File.Delete(CredentialVault.SavedPath);}catch{throw new InvalidOperationException("登录信息无法保存，请检查当前用户的文件权限。");}}
+                        loginProfile=next;targets.Text=String.Join(Environment.NewLine,list);manualDns.Text=selectedDns;dnsMode.Checked=chooseDns.Checked;autoOpen.Checked=chooseOpen.Checked;dialog.DialogResult=DialogResult.OK;
+                    }catch(ArgumentException e){MessageBox.Show(dialog,e.Message,"请检查设置",MessageBoxButtons.OK,MessageBoxIcon.Information);}
+                    catch{MessageBox.Show(dialog,"设置未保存，请检查文件权限后重试。","保存失败",MessageBoxButtons.OK,MessageBoxIcon.Information);}
                 };
-                dialog.Controls.AddRange(new Control[]{cancel,save});dialog.AcceptButton=save;dialog.CancelButton=cancel;dialog.ShowDialog(this);
+                dialog.Controls.AddRange(new Control[]{cancel,save});dialog.AcceptButton=save;dialog.CancelButton=cancel;
+                if(demo && settingsTest){settingsTestPassed=password.UseSystemPasswordChar && tabs.TabPages.Count==2 && !autoLogin.Checked && !remember.Checked;return;}
+                if(demo && !String.IsNullOrEmpty(settingsPreview)) {dialog.Show();Application.DoEvents();using(var image=new Bitmap(dialog.Width,dialog.Height)){dialog.DrawToBitmap(image,new Rectangle(Point.Empty,image.Size));image.Save(settingsPreview,System.Drawing.Imaging.ImageFormat.Png);}dialog.Hide();return;}
+                dialog.ShowDialog(this);
             }
+        }
+        void LoadLogin(string handoff) {
+            try{loginProfile=String.IsNullOrEmpty(handoff)?CredentialVault.Read(CredentialVault.SavedPath):CredentialVault.ConsumeHandoff(handoff);}
+            catch{loginProfile=new LoginProfile();Append("登录信息无法解密，请在设置中重新输入。");}
+            if(String.IsNullOrWhiteSpace(loginProfile.Portal))loginProfile.Portal=ClientIdentity.ActivePortal();
+        }
+        void CancelLogin() {var previous=loginCancel;loginCancel=null;if(previous!=null){try{previous.Cancel();}catch(ObjectDisposedException){}}}
+        void BeginLogin() {
+            CancelLogin();var cancellation=new CancellationTokenSource();loginCancel=cancellation;var copy=loginProfile.Copy();bool clickConnect=!resumeCycle;
+            SetStatus("自动登录");
+            System.Threading.Tasks.Task.Factory.StartNew(delegate {return NativeLogin.Run(copy,clickConnect,cancellation.Token,message=>Dispatch(delegate {if(loginCancel==cancellation && !cancellation.IsCancellationRequested){Append(message);SetStatus("手动确认");}}));}).ContinueWith(task=>{
+                copy.Password="";bool cancelled=cancellation.IsCancellationRequested;
+                Dispatch(delegate {if(loginCancel==cancellation){loginCancel=null;if(!cancelled && !String.IsNullOrEmpty(task.Result)){Append(task.Result);if(running && armed)SetStatus(task.Result.StartsWith("已提交登录",StringComparison.Ordinal)?"等待连接":"手动登录");}}cancellation.Dispose();});
+            });
         }
         void ShowHistory() {
             using(var dialog=new Form {Text="日志",ClientSize=new Size(580,350),StartPosition=FormStartPosition.CenterParent,Font=Font,Icon=Icon}) {
@@ -205,8 +238,11 @@ namespace GlobalProtectorWiFi {
             PreviewState("waiting");bool wait=start.Text=="停止" && start.Enabled && !settingsButton.Enabled;
             PreviewState("ready");bool ready=start.Text=="停止" && stateTitle.Text=="已连接";
             PreviewState("error");bool recovery=start.Text=="恢复" && start.Enabled;
-            return noInputs && idle && wait && ready && recovery;
+            running=false;armed=false;recoveryNeeded=false;settingsTest=true;ShowSettings();settingsTest=false;
+            bool purpose=Descendants(this).Any(x=>x.Text.Contains("GlobalProtect") && x.Text.Contains("普通网络访问"));
+            return noInputs && idle && wait && ready && recovery && purpose && settingsTestPassed;
         }
+        internal void RenderLoginSettings(string path){if(!demo)throw new InvalidOperationException();settingsPreview=path;ShowSettings();settingsPreview=null;}
         static IEnumerable<Control> Descendants(Control parent) {foreach(Control c in parent.Controls){yield return c;foreach(var d in Descendants(c)) yield return d;}}
         Label LabelAt(string text, int x, int y, int w, int h, float size, bool bold) { return new Label { Text = text, Bounds = new Rectangle(x,y,w,h), Font = new Font("Microsoft YaHei UI",size,bold?FontStyle.Bold:FontStyle.Regular), ForeColor = bold?ink:muted }; }
         void Style(Button b, bool primary) { b.FlatStyle = FlatStyle.Flat; b.FlatAppearance.BorderColor = primary?accent:Color.FromArgb(214,224,228); b.FlatAppearance.BorderSize = 1; b.BackColor = primary?accent:Color.White; b.ForeColor = primary?Color.White:ink; b.Cursor = Cursors.Hand; b.Font = new Font(Font,FontStyle.Bold); }
@@ -219,6 +255,9 @@ namespace GlobalProtectorWiFi {
             else if(tag=="等待连接" || tag=="等待重连")status="等待 VPN";
             else if(tag=="检查中" || tag=="验证中")status="连接中";
             else if(tag=="恢复中")status="恢复中";
+            else if(tag=="自动登录")status="登录中";
+            else if(tag=="手动确认")status="等待确认";
+            else if(tag=="手动登录")status="需手动登录";
             else if(tag=="需要恢复")status="需要恢复";
             else if(tag=="需要查看" || tag=="未开始" || tag=="已停止" && hadError)status="连接失败";
             stateTitle.Text=status;
@@ -234,8 +273,9 @@ namespace GlobalProtectorWiFi {
         }
         void LoadSettings() { try { string path=Path.Combine(Program.Root,"settings.json"); if(File.Exists(path)) { var d=Program.Json.Deserialize<Dictionary<string,string>>(File.ReadAllText(path)); targets.Text=d.ContainsKey("targets") && !String.IsNullOrWhiteSpace(d["targets"])?d["targets"]:Program.DefaultTarget; manualDns.Text=d.ContainsKey("dns")?d["dns"]:""; dnsMode.Checked=String.IsNullOrEmpty(manualDns.Text); autoOpen.Checked=!d.ContainsKey("autoOpen") || d["autoOpen"]=="true"; } } catch { targets.Text=Program.DefaultTarget; Append("设置未读取，已使用预设目标。"); } }
         void SaveSettings(string[] list,string dns,bool? open=null) { Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"settings.json"),Program.Json.Serialize(new Dictionary<string,string>{{"targets",String.Join(Environment.NewLine,list)},{"dns",dns},{"autoOpen",(open ?? autoOpen.Checked)?"true":"false"}}),Encoding.UTF8); }
-        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.2.0.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
+        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.3.0.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
         void StartWorker(string mode, bool resume = false) {
+            string loginSession=null;
             try {
                 if (demo) { Append("预览模式仅展示界面，不执行网络修改。"); return; }
                 if (running) return;
@@ -244,9 +284,11 @@ namespace GlobalProtectorWiFi {
                 if(mode=="Start" && !dnsMode.Checked) { var parsed=InputRules.Parse(manualDns.Text,false); if(parsed.Length!=1) throw new ArgumentException("指定 DNS 只需填写一个 IPv4 地址。"); dns=parsed[0]; }
                 if(mode=="Start") SaveSettings(list,dns);
                 if(!Program.Admin) {
-                    var elevated=new ProcessStartInfo(Application.ExecutablePath,mode=="Start"?"--autostart":"--recover") {UseShellExecute=true,Verb="runas"};
+                    if(mode=="Start" && loginProfile.Enabled)loginSession=CredentialVault.CreateHandoff(loginProfile);
+                    var elevated=new ProcessStartInfo(Application.ExecutablePath,(mode=="Start"?"--autostart":"--recover")+(loginSession==null?"":" --login-session="+loginSession)) {UseShellExecute=true,Verb="runas"};
                     Process.Start(elevated); allowClose=true; Close(); return;
                 }
+                CancelLogin();loginAttempted=false;resumeCycle=resume;
                 hadError=false; lastError=""; stopping=mode=="Restore"; armed=mode=="Start"; if(!resume) openedVpn=false;
                 string path=ExtractEngine();
                 if(mode=="Start") { string stopPath=Path.Combine(Program.Root,"stop.request"); if(File.Exists(stopPath)) File.Delete(stopPath); }
@@ -261,17 +303,17 @@ namespace GlobalProtectorWiFi {
                 var observedWorker=worker; worker.Exited += delegate { observedWorker.WaitForExit(); Dispatch(delegate { WorkerEnded(); }); };
                 running=true; start.Enabled=false; restore.Enabled=true; targets.Enabled=false; dnsMode.Enabled=false; manualDns.Enabled=false;
                 SetStatus(mode=="Restore"?"恢复中":"检查中"); worker.Start(); worker.BeginOutputReadLine(); worker.BeginErrorReadLine();
-            } catch(Exception e) { running=false; armed=false; start.Enabled=true; restore.Enabled=false; targets.Enabled=true; dnsMode.Enabled=true; manualDns.Enabled=!dnsMode.Checked; SetStatus("未开始"); Append(e.Message); }
+            } catch(Exception e) { if(loginSession!=null){try{File.Delete(CredentialVault.HandoffPath(loginSession));}catch{}} running=false; armed=false; start.Enabled=true; restore.Enabled=false; targets.Enabled=true; dnsMode.Enabled=true; manualDns.Enabled=!dnsMode.Checked; SetStatus("未开始"); Append(e.Message); }
         }
         void Dispatch(Action action) { try { if(!IsDisposed && IsHandleCreated) BeginInvoke(action); } catch(InvalidOperationException) {} }
         void OnEvent(string line) {
             try {
                 var evt=Program.Json.Deserialize<Dictionary<string,object>>(line); string name=Convert.ToString(evt["Event"]); object data=evt.ContainsKey("Data")?evt["Data"]:null;
-                if(name=="WAITING_FOR_VPN") { SetStatus("等待连接"); Append("等待 VPN 连接。"); if(autoOpen.Checked && !openedVpn) { openedVpn=true; OpenVpn(); } }
+                if(name=="WAITING_FOR_VPN") { SetStatus("等待连接"); Append("等待 VPN 连接。"); if((autoOpen.Checked || loginProfile.Enabled) && !openedVpn) { openedVpn=true; OpenVpn(); } if(loginProfile.Enabled && !loginAttempted){loginAttempted=true;BeginLogin();} }
                 else if(name=="APPLIED_TEMPORARY_SPLIT") { SetStatus("验证中"); Append("临时分流已应用，正在验证。"); }
-                else if(name=="READY") { SetStatus("分流正常"); Append("路由、公网和 DNS 验证通过。"); tray.Visible=true; }
-                else if(name=="ERROR" || name=="ROLLBACK_FAILED") { hadError=true; var d=data as Dictionary<string,object>; lastError=d!=null && d.ContainsKey("Message")?Convert.ToString(d["Message"]):Convert.ToString(data); Append(lastError); SetStatus("需要查看"); }
-                else if(name=="RESTORED") { Append("临时改动已恢复。"); SetStatus("已恢复"); }
+                else if(name=="READY") { CancelLogin();SetStatus("分流正常"); Append("路由、公网和 DNS 验证通过。"); tray.Visible=true; }
+                else if(name=="ERROR" || name=="ROLLBACK_FAILED") { CancelLogin();hadError=true; var d=data as Dictionary<string,object>; lastError=d!=null && d.ContainsKey("Message")?Convert.ToString(d["Message"]):Convert.ToString(data); Append(lastError); SetStatus("需要查看"); }
+                else if(name=="RESTORED") { CancelLogin();Append("临时改动已恢复。"); SetStatus("已恢复"); }
                 else if(name=="HEALTH") { }
                 else if(name=="DNS_AFTER_APPLY") { var d=data as Dictionary<string,object>; if(d!=null && d.ContainsKey("NameServer")) Append("VPN DNS："+Convert.ToString(d["NameServer"])); }
             } catch { Append(line); }
@@ -283,7 +325,7 @@ namespace GlobalProtectorWiFi {
             return error.Length>180?error.Substring(0,180)+"…":error;
         }
         void WorkerEnded() {
-            running=false;
+            CancelLogin();running=false;
             bool pending=false;
             try { string path=Path.Combine(Program.Root,"state.json"); if(File.Exists(path)) { var saved=Program.Json.Deserialize<Dictionary<string,object>>(File.ReadAllText(path)); pending=saved.ContainsKey("Stage") && Convert.ToString(saved["Stage"])!="restored"; } } catch { pending=true; }
             recoveryNeeded=pending;
@@ -301,7 +343,7 @@ namespace GlobalProtectorWiFi {
             if(quitWhenStopped && !pending) { allowClose=true; Close(); }
         }
         void StopWorker(bool quit) {
-            quitWhenStopped=quit; armed=false; if(reconnectTimer!=null) {reconnectTimer.Stop(); reconnectTimer.Dispose(); reconnectTimer=null;}
+            CancelLogin();quitWhenStopped=quit; armed=false; if(reconnectTimer!=null) {reconnectTimer.Stop(); reconnectTimer.Dispose(); reconnectTimer=null;}
             if(demo) { allowClose=true; if(quit) Close(); return; }
             if(running) { if(stopping) return; stopping=true; Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"stop.request"),DateTime.Now.ToString("o")); SetStatus("恢复中"); }
             else if(File.Exists(Path.Combine(Program.Root,"state.json"))) { StartWorker("Restore"); }
@@ -309,13 +351,8 @@ namespace GlobalProtectorWiFi {
         }
         void OpenLogs() { Directory.CreateDirectory(Program.Root); Process.Start("explorer.exe",Program.Root); }
         void OpenVpn() {
-            try {
-                string path=null;
-                foreach(var p in Process.GetProcessesByName("PanGPA")) { try { path=p.MainModule.FileName; break; } catch {} }
-                if(path==null) using(var key=Registry.LocalMachine.OpenSubKey(@"SYSTEM\CurrentControlSet\Services\PanGPS")) { string image=key==null?null:Convert.ToString(key.GetValue("ImagePath")); if(!String.IsNullOrEmpty(image)) { image=Environment.ExpandEnvironmentVariables(image).Trim(); string service=image.StartsWith("\"")?image.Split('"')[1]:image; path=Path.Combine(Path.GetDirectoryName(service),"PanGPA.exe"); } }
-                if(path==null || !File.Exists(path)) throw new FileNotFoundException("未找到 GlobalProtect，请从公司提供的安装包安装官方客户端。");
-                Process.Start(path);
-            } catch(Exception e) { Append(e.Message); }
+            try {Process.Start(ClientIdentity.ClientPath());}
+            catch{Append("无法打开 GlobalProtect，请确认官方客户端已安装。");}
         }
     }
 }

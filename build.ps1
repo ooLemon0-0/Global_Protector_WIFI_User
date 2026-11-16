@@ -13,6 +13,10 @@ if($errors.Count) { throw ($errors -join [Environment]::NewLine) }
 $exe=Join-Path $out 'GlobalProtectorWiFi.exe'
 $arguments=@('/nologo','/target:winexe','/platform:anycpu','/optimize+','/utf8output','/reference:System.dll','/reference:System.Core.dll','/reference:System.Drawing.dll','/reference:System.Windows.Forms.dll','/reference:System.Web.Extensions.dll',('/win32manifest:'+(Join-Path $root 'src\app.manifest')),('/resource:'+$engine+',Engine.ps1'),('/out:'+$exe),(Join-Path $root 'src\Program.cs'))
 $arguments+='/codepage:65001'
+$framework=Split-Path $compiler
+foreach($assembly in @('UIAutomationClient.dll','UIAutomationTypes.dll','WindowsBase.dll')){$arguments+=('/reference:'+(Join-Path $framework ('WPF\'+$assembly)))}
+$arguments+='/reference:System.Security.dll'
+$arguments+=(Join-Path $root 'src\Login.cs')
 & $compiler @arguments
 if($LASTEXITCODE -ne 0) { throw 'C# compilation failed.' }
 Copy-Item (Join-Path $root 'README.md'),(Join-Path $root 'LICENSE') -Destination $out -ErrorAction SilentlyContinue
@@ -27,6 +31,11 @@ if($Test) {
     if($LASTEXITCODE -ne 0) { throw 'Frontend test compilation failed.' }
     & $testExe
     if($LASTEXITCODE -ne 0) { throw 'Frontend input tests failed.' }
+    $loginTest=Join-Path $testBin 'LoginTests.exe'
+    & $compiler /nologo /codepage:65001 /target:exe ('/reference:'+$exe) ('/out:'+$loginTest) (Join-Path $root 'tests\LoginTests.cs')
+    if($LASTEXITCODE -ne 0) { throw 'Login test compilation failed.' }
+    & $loginTest
+    if($LASTEXITCODE -ne 0) { throw 'Login / credential storage tests failed.' }
     $uiReport=Join-Path $testBin 'ui-state.txt'
     $uiTest=Start-Process -FilePath $exe -ArgumentList @('--ui-self-test',('"'+$uiReport+'"')) -WindowStyle Hidden -PassThru
     if(-not $uiTest.WaitForExit(15000) -or $uiTest.ExitCode -ne 0 -or (Get-Content $uiReport -Raw).Trim() -ne 'passed') { throw 'UI state regression checks failed.' }

@@ -10,3 +10,4 @@ state.json
 bin/
 obj/
 TestResults/
+*.dpapi

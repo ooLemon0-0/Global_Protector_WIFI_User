@@ -10,19 +10,32 @@
 
 1. **先断开 GlobalProtect**，打开助手。
 2. 主界面无需填写参数，默认分流目标为 **`10.213.134.31`**。需要调整时在 **设置** 中修改目标地址、DNS 和自动打开 VPN 的选项；已有配置继续保留。
-3. 点击 **启动**，允许 Windows 管理员权限提示。
-4. 看到“等待 VPN”后，正常登录 VPN。断网期间，助手仍在本机继续工作。
-5. 等待“已连接”，之后照常使用自己的远程桌面或其他软件。助手不负责连接远程桌面。可最小化到系统托盘，**保留助手运行**。
-6. 断开 VPN 后会自动撤销临时修改，并继续等待下次连接。正常重连会重新检测与应用分流，无需重启助手。
-7. 要结束待命，点击 **停止**，或在托盘中选择 **退出并恢复**。
+3. 需要辅助登录时，先打开 **登录设置 → VPN 登录**，核对门户并手动输入账号密码，勾选 **自动填写并连接**；可选 **记住登录信息**。不启用时仍可在官方客户端手动登录。
+4. 点击 **启动**，允许 Windows 管理员权限提示。
+5. 看到“等待 VPN”后，正常登录 VPN。断网期间，助手仍在本机继续工作。
+6. 等待“已连接”，之后照常使用自己的远程桌面或其他软件。助手不负责连接远程桌面。可最小化到系统托盘，**保留助手运行**。
+7. 断开 VPN 后会自动撤销临时修改，并继续等待下次连接。正常重连会重新检测与应用分流，无需重启助手。
+8. 要结束待命，点击 **停止**，或在托盘中选择 **退出并恢复**。
 
 “自动打开 GlobalProtect”默认选中，只负责打开已安装的 GlobalProtect；也可以手动打开客户端。设置和日志入口位于窗口底部。
 
-## 快速登录与账号密码
+## 辅助登录与凭据保存
 
-助手不保存或自动填写 VPN 密码，也不绕过 MFA。GlobalProtect 官方支持由管理员配置 **Save User Credentials**（保存用户名与密码）或 **SSO**；是否可用取决于公司门户策略。若管理员已允许，正常登录一次后可由官方客户端记忆凭据，助手下次打开客户端即可继续使用。参见 [官方凭据保存设置](https://docs.paloaltonetworks.com/ngfw/help/10-1/globalprotect/network-globalprotect-portals/globalprotect-portals-agent-configuration-tab/globalprotect-portals-agent-authentication-tab)。
+![登录设置](docs/login-settings.png)
 
-GlobalProtect 需由公司提供并预先安装。工具不会处理账号、密码或 MFA。EXE 尚未使用商业证书签名；校验发布页的 SHA-256，不需要关闭防病毒软件。
+- 在登录设置中预输入门户、账号、密码；密码框遮挡输入。
+- 勾选“自动填写并连接”后，启动助手会打开已安装的 GlobalProtect，尝试点击连接、识别原生账号密码窗口、填写并提交一次。
+- 仅接受与当前配置相同的门户，目标程序必须是官方服务所指向、签名有效且签发组织为 Palo Alto Networks 的 PanGPA.exe，并且运行在相同 Windows 用户和会话中。不会把密码填入浏览器或其他进程。
+- 网页 / SAML、验证码 / MFA、代理密码和不明确的窗口交回用户处理。证书确认不会自动接受，需用户自行核验；确认后若出现兼容的原生登录窗口，可继续填写。
+- 每轮最多提交一次用户名和密码，不会反复尝试错误密码。VPN 断开后的待命阶段不会擅自点击连接；用户手动发起重连时可以继续处理新的原生登录窗口。
+- 勾选“记住登录信息”后，门户、账号和密码通过 Windows DPAPI **CurrentUser** 加密保存在本机；不勾选则只在本次助手会话中保留。UAC 提权使用一次性加密交接文件，命令行只包含随机会话 ID。
+- 不读取 GlobalProtect 已保存的密码，不把凭据写入 settings.json、PowerShell 参数、日志或仓库。加密资料不能直接复制到另一 Windows 用户或另一电脑使用。
+
+这是 UI 兼容辅助功能，不是 Palo Alto 官方登录 API。已验证本机客户端签名，已进行门户绑定、加密存储和模拟决策测试；**没有使用真实账号密码做登录实测**。各版本的窗口可能不同，无法识别时会停止填写并提示手动登录。
+
+也可使用 GlobalProtect 官方的 [Save User Credentials / SSO 设置](https://docs.paloaltonetworks.com/ngfw/help/10-1/globalprotect/network-globalprotect-portals/globalprotect-portals-agent-configuration-tab/globalprotect-portals-agent-authentication-tab)，具体取决于公司策略。
+
+GlobalProtect 需预先安装。程序未进行商业代码签名，请校验发布页 SHA-256，不需要关闭防病毒软件。
 
 ## 工作原理
 
@@ -52,6 +65,8 @@ GlobalProtect 需由公司提供并预先安装。工具不会处理账号、密
 - `events.jsonl`：状态、检测与错误记录。
 - `state.json`：恢复快照。
 - `settings.json`：本机保存的目标地址及 DNS 选项。
+- `login-profile.dpapi`：仅在用户选择记住登录信息时保存的加密凭据。
+- `handoff-*.dpapi`：UAC 提权的一次性交接资料，读取后删除。
 
 异常关闭后，再次开启助手会识别未完成的快照。先断开 VPN，再点击 **停止**。不要删除数据目录后再尝试恢复，也不要同时运行旧版脚本和 EXE。
 
@@ -73,7 +88,7 @@ GitHub Actions 会在推送时构建和测试；推送 `v*` 标签时构建带�
 
 ## English
 
-A small portable Windows companion for GlobalProtect. It keeps the physical internet default route, adds selected IPv4 target routes through the VPN, and chooses a working VPN-provided DNS server. It retains other VPN-provided routes, needs administrator rights to change networking, and must remain running for restoration. It is not an official Palo Alto Networks product and cannot override every corporate policy. No credentials or telemetry are collected.
+A small portable Windows companion for GlobalProtect. It keeps the physical internet default route, adds selected IPv4 target routes through the VPN, and chooses a working VPN-provided DNS server. It retains other VPN-provided routes, needs administrator rights to change networking, and must remain running for restoration. It is not an official Palo Alto Networks product and cannot override every corporate policy. Optional native-dialog login assistance is portal-bound and limited to a verified vendor-signed client under the same Windows user. Credentials entered by the user can be stored locally with Windows DPAPI CurrentUser; they are not logged or uploaded. Browser/SAML, MFA and certificate decisions remain manual. No telemetry is collected.
 
 ## License
 
