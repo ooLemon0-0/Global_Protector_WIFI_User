@@ -1,0 +1,12 @@
+dist/
+runtime/
+test-state.json
+*.user
+*.log
+*.jsonl
+settings.json
+state.json
+.vs/
+bin/
+obj/
+TestResults/
