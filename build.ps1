@@ -17,6 +17,7 @@ $framework=Split-Path $compiler
 foreach($assembly in @('UIAutomationClient.dll','UIAutomationTypes.dll','WindowsBase.dll')){$arguments+=('/reference:'+(Join-Path $framework ('WPF\'+$assembly)))}
 $arguments+='/reference:System.Security.dll'
 $arguments+=(Join-Path $root 'src\Login.cs')
+$arguments+=(Join-Path $root 'src\Updates.cs')
 & $compiler @arguments
 if($LASTEXITCODE -ne 0) { throw 'C# compilation failed.' }
 Copy-Item (Join-Path $root 'README.md'),(Join-Path $root 'LICENSE') -Destination $out -ErrorAction SilentlyContinue
@@ -36,6 +37,11 @@ if($Test) {
     if($LASTEXITCODE -ne 0) { throw 'Login test compilation failed.' }
     & $loginTest
     if($LASTEXITCODE -ne 0) { throw 'Login / credential storage tests failed.' }
+    $updateTest=Join-Path $testBin 'UpdateTests.exe'
+    & $compiler /nologo /codepage:65001 /target:exe ('/reference:'+$exe) ('/out:'+$updateTest) (Join-Path $root 'tests\UpdateTests.cs')
+    if($LASTEXITCODE -ne 0) { throw 'Update test compilation failed.' }
+    & $updateTest
+    if($LASTEXITCODE -ne 0) { throw 'Update checks failed.' }
     $uiReport=Join-Path $testBin 'ui-state.txt'
     $uiTest=Start-Process -FilePath $exe -ArgumentList @('--ui-self-test',('"'+$uiReport+'"')) -WindowStyle Hidden -PassThru
     if(-not $uiTest.WaitForExit(15000) -or $uiTest.ExitCode -ne 0 -or (Get-Content $uiReport -Raw).Trim() -ne 'passed') { throw 'UI state regression checks failed.' }

@@ -31,13 +31,10 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ github.ref_name }}
         shell: pwsh
-        run: >-
-          gh release create "${{ github.ref_name }}"
-          dist/GlobalProtectorWiFi.exe
-          dist/GlobalProtectorWiFi-portable.zip
-          dist/GlobalProtectorWiFi-source.zip
-          dist/SHA256SUMS.txt
-          --title "Global Protector WiFi ${{ github.ref_name }}"
-          --notes-file docs/RELEASE_NOTES.md
-          --prerelease
+        run: |
+          $releaseArgs=@('release','create',$env:RELEASE_TAG,'dist/GlobalProtectorWiFi.exe','dist/GlobalProtectorWiFi-portable.zip','dist/GlobalProtectorWiFi-source.zip','dist/SHA256SUMS.txt','--title',('Global Protector WiFi '+$env:RELEASE_TAG),'--notes-file','docs/RELEASE_NOTES.md')
+          if($env:RELEASE_TAG -match '-'){$releaseArgs+='--prerelease'}else{$releaseArgs+='--latest'}
+          & gh @releaseArgs
+          if($LASTEXITCODE -ne 0){throw 'GitHub release publication failed.'}

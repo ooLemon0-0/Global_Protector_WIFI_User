@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Global Protector WiFi")]
 [assembly: AssemblyDescription("Independent GlobalProtect split-routing companion")]
-[assembly: AssemblyVersion("0.3.2.0")]
-[assembly: AssemblyFileVersion("0.3.2.0")]
+[assembly: AssemblyVersion("1.0.0.0")]
+[assembly: AssemblyFileVersion("1.0.0.0")]
 namespace GlobalProtectorWiFi {
     internal static class Program {
         internal const string DefaultTarget = "10.213.134.31";
@@ -26,6 +26,10 @@ namespace GlobalProtectorWiFi {
         internal static bool Admin { get { return new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator); } }
         [STAThread] static int Main(string[] args) {
             Application.EnableVisualStyles(); Application.SetCompatibleTextRenderingDefault(false);
+            if(args.Length==2 && args[0]=="--check-update") {
+                var result=UpdateChecker.Check(CancellationToken.None);
+                File.WriteAllText(args[1],Program.Json.Serialize(new{Status=result.Status.ToString(),CurrentVersion=UpdateChecker.VersionText,LatestVersion=result.LatestVersion,PageUrl=result.PageUrl}),Encoding.UTF8);return 0;
+            }
             if(args.Length==2 && args[0]=="--diagnose-login") {
                 try{File.WriteAllText(args[1],Program.Json.Serialize(LoginDiagnostics.Capture()),Encoding.UTF8);return 0;}
                 catch(Exception e){File.WriteAllText(args[1],e.GetType().Name,Encoding.UTF8);return 1;}
@@ -113,6 +117,11 @@ namespace GlobalProtectorWiFi {
         Process worker; bool running, stopping, quitWhenStopped, allowClose, hadError;
         string lastError = "";
         readonly Button settingsButton = new Button();
+        readonly Button updateButton=new Button();
+        readonly ToolTip updateTip=new ToolTip();
+        System.Windows.Forms.Timer updateTimer;
+        CancellationTokenSource updateCancel;
+        UpdateResult availableUpdate;
 
         readonly WifiMark heroMark = new WifiMark();
         TextBox visibleLog;
@@ -139,11 +148,14 @@ namespace GlobalProtectorWiFi {
             settingsButton.Text="登录设置";StyleLink(settingsButton);settingsButton.SetBounds(18,300,88,27);settingsButton.Click+=delegate {ShowSettings();};
             var history=new Button {Text="日志"};StyleLink(history);history.SetBounds(110,300,64,27);history.Click+=delegate {ShowHistory();};
             Controls.Add(settingsButton);Controls.Add(history);
+            updateButton.Text="检查更新";StyleLink(updateButton);updateButton.SetBounds(262,300,120,27);updateButton.Click+=delegate {if(availableUpdate!=null)OpenUpdate();else CheckForUpdates(true);};
+            updateTip.SetToolTip(updateButton,"当前版本 v"+UpdateChecker.VersionText+" · 点击检查更新");Controls.Add(updateButton);
             targets.Text=Program.DefaultTarget; dnsMode.Checked=true;
             if(!demo) {LoadSettings();LoadLogin(handoff);}
 
             var menu=new ContextMenuStrip();
             menu.Items.Add("显示助手",null,delegate {Show();WindowState=FormWindowState.Normal;Activate();});
+            menu.Items.Add("检查更新",null,delegate {CheckForUpdates(true);});
             menu.Items.Add("停止",null,delegate {StopWorker(false);});
             menu.Items.Add("退出并恢复",null,delegate {StopWorker(true);});
             tray.Icon=Icon; tray.Text="Global Protector · 就绪"; tray.ContextMenuStrip=menu;
@@ -151,9 +163,42 @@ namespace GlobalProtectorWiFi {
             FormClosing+=delegate(object s,FormClosingEventArgs e) {
                 if(!allowClose && (running || armed)) {e.Cancel=true;Hide();tray.Visible=true;tray.ShowBalloonTip(1800,"已最小化到托盘","右键菜单可停止或退出。",ToolTipIcon.Info);}
             };
-            FormClosed+=delegate {CancelLogin();loginProfile.Password="";tray.Dispose();};
+            FormClosed+=delegate {CancelLogin();CancelUpdates();if(updateTimer!=null)updateTimer.Dispose();updateTip.Dispose();loginProfile.Password="";tray.Dispose();};
             SetStatus("准备就绪");
-            Shown+=delegate {if(!demo && (autoStart || recover)) BeginInvoke(new Action(delegate {StartWorker(recover?"Restore":"Start");}));};
+            Shown+=delegate {
+                if(!demo){updateTimer=new System.Windows.Forms.Timer{Interval=1500};updateTimer.Tick+=delegate {updateTimer.Stop();CheckForUpdates(false);};updateTimer.Start();}
+                if(!demo && (autoStart || recover)) BeginInvoke(new Action(delegate {StartWorker(recover?"Restore":"Start");}));
+            };
+        }
+        void CancelUpdates(){var previous=updateCancel;updateCancel=null;if(previous!=null){try{previous.Cancel();}catch(ObjectDisposedException){}}}
+        void CheckForUpdates(bool manual) {
+            if(demo || updateCancel!=null)return;
+            if(updateTimer!=null)updateTimer.Stop();
+            var cancellation=new CancellationTokenSource();updateCancel=cancellation;
+            updateButton.Enabled=false;updateButton.Text="检查中…";
+            System.Threading.Tasks.Task.Factory.StartNew(()=>UpdateChecker.Check(cancellation.Token)).ContinueWith(task=>{
+                var result=task.IsFaulted?new UpdateResult{Status=UpdateStatus.Unavailable}:task.Result;bool cancelled=cancellation.IsCancellationRequested;
+                Dispatch(delegate {if(updateCancel==cancellation && !cancelled){updateCancel=null;ApplyUpdateResult(result,manual);}});
+                cancellation.Dispose();
+            });
+        }
+        void ApplyUpdateResult(UpdateResult result,bool manual) {
+            updateButton.Enabled=true;
+            if(result.Status==UpdateStatus.Available) {
+                availableUpdate=result;updateButton.Text="发现新版本";updateButton.ForeColor=accent;
+                updateTip.SetToolTip(updateButton,"v"+result.LatestVersion+" · 点击打开下载页面");
+                if(!demo && tray.Visible)tray.ShowBalloonTip(5000,"发现新版本 v"+result.LatestVersion,"点击助手中的“发现新版本”查看更新。",ToolTipIcon.Info);
+                if(manual)OpenUpdate();
+            } else {
+                availableUpdate=null;updateButton.Text="检查更新";updateButton.ForeColor=muted;
+                updateTip.SetToolTip(updateButton,"当前版本 v"+UpdateChecker.VersionText+(result.Status==UpdateStatus.UpToDate?" · 已是最新版本":" · 暂时无法检查更新"));
+                if(manual)MessageBox.Show(this,result.Status==UpdateStatus.UpToDate?"当前已是最新版本（v"+UpdateChecker.VersionText+"）。":"暂时无法检查更新，请稍后重试。","检查更新",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            }
+        }
+        void OpenUpdate() {
+            if(availableUpdate==null)return;
+            try{Process.Start(new ProcessStartInfo(availableUpdate.PageUrl){UseShellExecute=true});}
+            catch{MessageBox.Show(this,"无法打开浏览器，请在 GitHub 仓库的 Releases 页面下载。","检查更新",MessageBoxButtons.OK,MessageBoxIcon.Information);}
         }
         void StyleLink(Button button) {
             button.FlatStyle=FlatStyle.Flat;button.FlatAppearance.BorderSize=0;
@@ -246,6 +291,7 @@ namespace GlobalProtectorWiFi {
             if(state=="ready") {running=true;armed=true;SetStatus("分流正常");}
             else if(state=="waiting") {running=true;armed=true;SetStatus("等待连接");}
             else if(state=="error") {hadError=true;recoveryNeeded=true;SetStatus("需要恢复");}
+            else if(state=="update")ApplyUpdateResult(new UpdateResult{Status=UpdateStatus.Available,LatestVersion="1.1.0",PageUrl=UpdateChecker.RepositoryUrl+"/releases/tag/v1.1.0"},false);
         }
         internal bool CheckMainUi() {
             if(!demo) throw new InvalidOperationException("Read-only UI test required.");
@@ -290,7 +336,7 @@ namespace GlobalProtectorWiFi {
         }
         void LoadSettings() { try { string path=Path.Combine(Program.Root,"settings.json"); if(File.Exists(path)) { var d=Program.Json.Deserialize<Dictionary<string,string>>(File.ReadAllText(path)); targets.Text=d.ContainsKey("targets") && !String.IsNullOrWhiteSpace(d["targets"])?d["targets"]:Program.DefaultTarget; manualDns.Text=d.ContainsKey("dns")?d["dns"]:""; dnsMode.Checked=String.IsNullOrEmpty(manualDns.Text); } } catch { targets.Text=Program.DefaultTarget; Append("设置未读取，已使用预设目标。"); } }
         void SaveSettings(string[] list,string dns) { Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"settings.json"),Program.Json.Serialize(new Dictionary<string,string>{{"targets",String.Join(Environment.NewLine,list)},{"dns",dns}}),Encoding.UTF8); }
-        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.3.2.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
+        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-1.0.0.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
         void StartWorker(string mode, bool resume = false) {
             string loginSession=null;
             try {

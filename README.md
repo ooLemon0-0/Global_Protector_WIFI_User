@@ -6,7 +6,7 @@
 
 ## 下载与使用
 
-在 [Releases](https://github.com/ooLemon0-0/Global_Protector_WIFI_User/releases) 下载 `GlobalProtectorWiFi.exe` 或便携 ZIP。源码 ZIP 供开发者构建，不能替代 EXE。
+在 [最新正式版](https://github.com/ooLemon0-0/Global_Protector_WIFI_User/releases/latest) 下载 `GlobalProtectorWiFi.exe` 或便携 ZIP。源码 ZIP 供开发者构建，不能替代 EXE。当前正式版为 **v1.0.0**。
 
 1. **先断开 GlobalProtect**，打开助手。
 2. 默认分流目标为 **`10.213.134.31`**。需要调整时在 **登录设置 → 网络** 中修改目标地址和 DNS；已有配置继续保留。
@@ -18,6 +18,14 @@
 8. 要结束待命，点击 **停止**，或在托盘中选择 **退出并恢复**。
 
 启动时自动打开 GlobalProtect 和辅助登录固定启用，没有关闭选项。设置和日志入口位于窗口底部；停止、退出和恢复网络无需重新填写登录信息。
+
+## 检查更新
+
+- 每次启动后在后台自动检查本仓库最新的正式 Release，忽略预发布版和草稿，只提示版本号高于当前版本且已提供 EXE 的版本。
+- 发现新版时，窗口底部显示 **发现新版本**；在托盘中运行时同时显示通知。点击入口打开本仓库的版本下载页。也可在窗口底部或托盘菜单中手动 **检查更新**。
+- 网络请求有超时限制；断网、GitHub 不可达或接口限流时，自动检查安静结束，不阻止登录、不改变网络，也不打断 VPN。
+- 更新检查只请求公开的 GitHub 发布信息，不读取或发送 VPN 门户、账号、密码。程序不自动运行下载文件或覆盖运行中的 EXE。
+- 下载新版后，在当前会话结束时停止并退出旧版，再替换 EXE；本机设置和加密登录信息继续保留。
 
 ## 辅助登录与凭据保存
 
@@ -91,7 +99,7 @@ GitHub Actions 会在推送时构建和测试；推送 `v*` 标签时构建带�
 
 ## English
 
-A small portable Windows companion for GlobalProtect. It keeps the physical internet default route, adds selected IPv4 target routes through the VPN, and chooses a working VPN-provided DNS server. It retains other VPN-provided routes, needs administrator rights to change networking, and must remain running for restoration. It is not an official Palo Alto Networks product and cannot override every corporate policy. Starting requires a portal, username and password; missing details open a mandatory login dialog before elevation or network changes. Native-dialog login assistance is always enabled, portal-bound and limited to a verified vendor-signed client under the same Windows user. Credentials entered by the user can be stored locally with Windows DPAPI CurrentUser; they are not logged or uploaded. Browser/SAML, MFA and certificate decisions remain manual. No telemetry is collected.
+A small portable Windows companion for GlobalProtect. It keeps the physical internet default route, adds selected IPv4 target routes through the VPN, and chooses a working VPN-provided DNS server. It retains other VPN-provided routes, needs administrator rights to change networking, and must remain running for restoration. It is not an official Palo Alto Networks product and cannot override every corporate policy. Starting requires a portal, username and password; missing details open a mandatory login dialog before elevation or network changes. Native-dialog login assistance is always enabled, portal-bound and limited to a verified vendor-signed client under the same Windows user. Credentials entered by the user can be stored locally with Windows DPAPI CurrentUser; they are not logged or uploaded. Browser/SAML, MFA and certificate decisions remain manual. Startup update checks fetch public GitHub release metadata in the background; only newer stable releases are offered, without sending VPN credentials or replacing a running application. No telemetry is collected.
 
 ## License
 
