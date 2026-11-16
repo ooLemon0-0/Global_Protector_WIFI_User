@@ -16,8 +16,8 @@ using Microsoft.Win32;
 
 [assembly: AssemblyTitle("Global Protector WiFi")]
 [assembly: AssemblyDescription("Independent GlobalProtect split-routing companion")]
-[assembly: AssemblyVersion("0.1.0.0")]
-[assembly: AssemblyFileVersion("0.1.0.0")]
+[assembly: AssemblyVersion("0.1.1.0")]
+[assembly: AssemblyFileVersion("0.1.1.0")]
 namespace GlobalProtectorWiFi {
     internal static class Program {
         internal static readonly string Root = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "GlobalProtectorWiFi");
@@ -101,7 +101,7 @@ namespace GlobalProtectorWiFi {
             header.Controls.Add(logo);
             header.Controls.Add(LabelAt("Global Protector", 68, 3, 400, 30, 19, true));
             header.Controls.Add(LabelAt("VPN 内网与日常上网，各走其路。", 70, 38, 440, 24, 10, false));
-            var version = LabelAt("v0.1.0", 620, 14, 90, 25, 9, false); version.TextAlign = ContentAlignment.MiddleRight; version.Anchor = AnchorStyles.Top | AnchorStyles.Right; header.Controls.Add(version);
+            var version = LabelAt("v0.1.1", 620, 14, 90, 25, 9, false); version.TextAlign = ContentAlignment.MiddleRight; version.Anchor = AnchorStyles.Top | AnchorStyles.Right; header.Controls.Add(version);
             layout.Controls.Add(header, 0, 0);
             var status = new Card { Dock = DockStyle.Fill, Margin = new Padding(0, 0, 0, 12), Surface = Color.FromArgb(235, 246, 243) };
             badge.SetBounds(20, 17, 620, 20); badge.Font = new Font(Font, FontStyle.Bold); badge.ForeColor = accent;
@@ -169,7 +169,7 @@ namespace GlobalProtectorWiFi {
         void Append(string message) { log.AppendText(DateTime.Now.ToString("HH:mm:ss") + "  " + message + Environment.NewLine); }
         void LoadSettings() { try { string path=Path.Combine(Program.Root,"settings.json"); if(File.Exists(path)) { var d=Program.Json.Deserialize<Dictionary<string,string>>(File.ReadAllText(path)); targets.Text=d.ContainsKey("targets")?d["targets"]:""; manualDns.Text=d.ContainsKey("dns")?d["dns"]:""; dnsMode.Checked=String.IsNullOrEmpty(manualDns.Text); autoOpen.Checked=!d.ContainsKey("autoOpen") || d["autoOpen"]=="true"; } } catch { Append("设置未读取，填写地址后即可开始。"); } }
         void SaveSettings(string[] list,string dns) { Directory.CreateDirectory(Program.Root); File.WriteAllText(Path.Combine(Program.Root,"settings.json"),Program.Json.Serialize(new Dictionary<string,string>{{"targets",String.Join(Environment.NewLine,list)},{"dns",dns},{"autoOpen",autoOpen.Checked?"true":"false"}}),Encoding.UTF8); }
-        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.1.0.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
+        string ExtractEngine() { Directory.CreateDirectory(Program.Root); string path=Path.Combine(Program.Root,"engine-0.1.1.ps1"); using(var stream=Assembly.GetExecutingAssembly().GetManifestResourceStream("Engine.ps1")) using(var reader=new StreamReader(stream,Encoding.UTF8)) File.WriteAllText(path,reader.ReadToEnd(),new UTF8Encoding(true)); return path; }
         void StartWorker(string mode, bool resume = false) {
             try {
                 if (demo) { Append("预览模式仅展示界面，不执行网络修改。"); return; }
@@ -183,6 +183,7 @@ namespace GlobalProtectorWiFi {
                 }
                 hadError=false; lastError=""; stopping=false; armed=mode=="Start"; if(!resume) openedVpn=false;
                 string path=ExtractEngine();
+                if(mode=="Start") { string stopPath=Path.Combine(Program.Root,"stop.request"); if(File.Exists(stopPath)) File.Delete(stopPath); }
                 var info=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System),"WindowsPowerShell\\v1.0\\powershell.exe"));
                 info.Arguments="-NoLogo -NoProfile -NonInteractive -ExecutionPolicy Bypass -File \""+path+"\" -Mode "+mode+" -DataDirectory \""+Program.Root+"\"";
                 if(mode=="Start") info.Arguments+=" -Targets \""+String.Join(",",list)+"\""+(dns.Length>0?" -PreferredDns "+dns:"");

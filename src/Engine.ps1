@@ -16,7 +16,7 @@ $script:Runtime=$DataDirectory
 $script:StatePath=Join-Path $script:Runtime 'state.json'
 $script:StopPath=Join-Path $script:Runtime 'stop.request'
 $script:LogPath=Join-Path $script:Runtime 'events.jsonl'
-$script:ToolVersion='0.1.0'
+$script:ToolVersion='0.1.1'
 
 function Write-Event([string]$Event,$Data) {
     $line=[ordered]@{Time=(Get-Date).ToString('o');Event=$Event;Data=$Data} | ConvertTo-Json -Depth 9 -Compress
@@ -272,7 +272,6 @@ try {
     }
     try { $lock=[IO.File]::Open($lockPath,'OpenOrCreate','ReadWrite','None') }
     catch { throw 'This tool is already running. Use Restore.cmd to stop it.' }
-    if (Test-Path -LiteralPath $script:StopPath) { Remove-Item -LiteralPath $script:StopPath -Force }
     $script:TargetList=@(Parse-Targets $Targets)
     $script:Target=$script:TargetList[0]
     $context=Get-StartContext
@@ -290,6 +289,7 @@ try {
     }
     if ($vpn.Status -ne 'Up' -or $defaults.Count -ne 1) { throw '等待 VPN 连接超时，未修改网络。请确认 GlobalProtect 显示已连接。' }
     Start-Sleep -Seconds 10
+    if (Test-Path -LiteralPath $script:StopPath) { Write-Event 'WAIT_CANCELLED' '已停止等待，网络未修改。'; return }
     $vpn=Get-Vpn
     $vpnRoutes=@(Get-NetRoute -InterfaceIndex $vpn.ifIndex -AddressFamily IPv4 -PolicyStore ActiveStore)
     $defaults=@($vpnRoutes | Where-Object DestinationPrefix -eq '0.0.0.0/0')
@@ -327,6 +327,7 @@ try {
     }
     $state.DnsRegistryBefore=Get-VpnDnsObservation $state
     Write-Event 'DNS_BEFORE' $state.DnsRegistryBefore
+    if (Test-Path -LiteralPath $script:StopPath) { Write-Event 'WAIT_CANCELLED' '已停止准备，网络未修改。'; return }
     Save-State $state
     $mustRestore=$true
     Apply-Split $state
@@ -336,6 +337,7 @@ try {
     Start-Sleep -Seconds 8
     $verified=$false
     for ($attempt=1;$attempt -le 3;$attempt++) {
+        if (Test-Path -LiteralPath $script:StopPath) { return }
         $result=Test-ConnectionResult $state
         Write-Event 'VERIFICATION' $result
         if ($result.Success) { $verified=$true; break }
