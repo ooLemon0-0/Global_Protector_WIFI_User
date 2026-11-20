@@ -1,4 +1,4 @@
-param([switch]$Test,[string]$OutputDirectory)
+param([switch]$Test,[string]$OutputDirectory,[string]$VietnamRelayDirectory)
 $ErrorActionPreference='Stop'
 $root=$PSScriptRoot
 $out=if($OutputDirectory){[IO.Path]::GetFullPath($OutputDirectory)}else{Join-Path $root 'dist'}
@@ -19,6 +19,25 @@ $arguments+='/reference:System.Security.dll'
 $arguments+=(Join-Path $root 'src\Login.cs')
 $arguments+=(Join-Path $root 'src\Updates.cs')
 $arguments+=(Join-Path $root 'src\Branding.cs')
+$arguments+=(Join-Path $root 'src\VietnamWeb.cs')
+$arguments+=(Join-Path $root 'src\VietnamTransfer.cs')
+$arguments+=(Join-Path $root 'src\VietnamFileWindow.cs')
+if($VietnamRelayDirectory) {
+    $relay=(Resolve-Path -LiteralPath $VietnamRelayDirectory).Path
+    $bundle=Join-Path $root 'tests\bin\vietnam-build'
+    New-Item -ItemType Directory -Path $bundle -Force | Out-Null
+    foreach($name in @('Connect-Vietnam.ps1','Start-LocalBackground.ps1','Start-Local.ps1','LocalRelay.exe','RdpWebChannel.dll','session.txt','VietnamWebRelay-Setup.exe')) {
+        $file=Join-Path $relay $name
+        if(!(Test-Path -LiteralPath $file -PathType Leaf)) { throw "Missing Vietnam relay file: $file" }
+        if($name.EndsWith('.ps1')) {
+            $normalized=Join-Path $bundle $name
+            [IO.File]::WriteAllText($normalized,[IO.File]::ReadAllText($file),[Text.UTF8Encoding]::new($true))
+            $file=$normalized
+        }
+        $resource=if($name -eq 'VietnamWebRelay-Setup.exe'){'VN-Web-Setup-v5.exe'}else{$name}
+        $arguments+=('/resource:'+$file+',VietnamWeb.'+$resource)
+    }
+}
 $arguments+=('/win32icon:'+(Join-Path $root 'assets\app.ico'))
 $arguments+=('/resource:'+(Join-Path $root 'assets\app.ico')+',App.ico')
 $arguments+=('/resource:'+(Join-Path $root 'assets\logo.png')+',Logo.png')
@@ -27,6 +46,8 @@ if($LASTEXITCODE -ne 0) { throw 'C# compilation failed.' }
 Copy-Item (Join-Path $root 'README.md'),(Join-Path $root 'LICENSE') -Destination $out -ErrorAction SilentlyContinue
 Get-FileHash $exe -Algorithm SHA256 | ForEach-Object { ($_.Hash.ToLower()+'  GlobalProtectorWiFi.exe') | Set-Content (Join-Path $out 'SHA256SUMS.txt') -Encoding ASCII }
 if($Test) {
+    if($VietnamRelayDirectory) { & (Join-Path $root 'tests\VietnamWebTests.ps1') -ExecutablePath $exe }
+    & (Join-Path $root 'tests\LoggingTests.ps1') -ExecutablePath $exe
     & (Join-Path $root 'tests\Run-Tests.ps1')
     $testBin=Join-Path $root 'tests\bin'
     New-Item -ItemType Directory -Path $testBin -Force | Out-Null

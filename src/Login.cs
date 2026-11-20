@@ -202,4 +202,65 @@ namespace GlobalProtectorWiFi {
             }catch(OperationCanceledException){LoginDiagnostics.Event("LOGIN_CANCELLED");return "";}catch(Exception e){LoginDiagnostics.Event("LOGIN_EXCEPTION",new{Type=e.GetType().Name,HResult=e.HResult});return "自动登录失败："+e.GetType().Name+"。请查看登录诊断日志。";}
         }
     }
+
+    public static class DisconnectRules {
+        public static bool IsDisconnectControl(string name) {
+            switch ((name ?? "").Trim().ToLowerInvariant()) {
+                case "disconnect":
+                case "disconnect vpn":
+                case "断开":
+                case "断开连接":
+                case "断开 vpn 连接":
+                case "中斷連線":
+                    return true;
+                default:
+                    return false;
+            }
+        }
+    }
+
+    internal static class NativeDisconnect {
+        // Use the official client's normal user action. A policy prompt is left
+        // open for the user; the caller independently verifies that VPN is down.
+        internal static int Request() {
+            try {
+                string path=ClientIdentity.ClientPath();
+                if(!ClientIdentity.Trusted(path)) { LoginDiagnostics.Event("DISCONNECT_CLIENT_UNTRUSTED");return 2; }
+                int session;
+                using(var current=Process.GetCurrentProcess()) session=current.SessionId;
+                using(var opener=Process.Start(path)) { }
+                var deadline=Stopwatch.StartNew();
+                while(deadline.Elapsed.TotalSeconds<8) {
+                    foreach(var process in Process.GetProcessesByName("PanGPA"))using(process) {
+                        if(process.SessionId!=session || !ClientIdentity.SameUser(process))continue;
+                        string actual;
+                        try { actual=process.MainModule.FileName; } catch { continue; }
+                        if(!String.Equals(actual,path,StringComparison.OrdinalIgnoreCase))continue;
+                        var roots=AutomationElement.RootElement.FindAll(TreeScope.Children,new PropertyCondition(AutomationElement.ProcessIdProperty,process.Id));
+                        var buttons=new List<AutomationElement>();
+                        var buttonKind=new PropertyCondition(AutomationElement.ControlTypeProperty,ControlType.Button);
+                        foreach(AutomationElement root in roots) {
+                            if(!root.Current.IsEnabled || root.Current.IsOffscreen)continue;
+                            foreach(AutomationElement button in root.FindAll(TreeScope.Descendants,buttonKind)) {
+                                if(button.Current.ProcessId==process.Id && button.Current.IsEnabled && !button.Current.IsOffscreen && DisconnectRules.IsDisconnectControl(button.Current.Name))
+                                    buttons.Add(button);
+                            }
+                        }
+                        if(buttons.Count!=1)continue;
+                        object action;
+                        if(!buttons[0].TryGetCurrentPattern(InvokePattern.Pattern,out action))continue;
+                        ((InvokePattern)action).Invoke();
+                        LoginDiagnostics.Event("DISCONNECT_CLICKED");
+                        return 0;
+                    }
+                    Thread.Sleep(400);
+                }
+                LoginDiagnostics.Event("DISCONNECT_CONTROL_UNAVAILABLE");
+                return 2;
+            } catch(Exception e) {
+                LoginDiagnostics.Event("DISCONNECT_EXCEPTION",new{Type=e.GetType().Name,HResult=e.HResult});
+                return 2;
+            }
+        }
+    }
 }

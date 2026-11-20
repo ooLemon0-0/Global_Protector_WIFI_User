@@ -15,13 +15,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Build and test
-        shell: powershell
-        run: ./build.ps1 -Test
+        shell: pwsh
+        run: |
+          $relay = Join-Path $env:RUNNER_TEMP 'GlobalProtectorWiFi-relay'
+          ./relay/Build.ps1 -OutputDirectory $relay
+          ./build.ps1 -Test -VietnamRelayDirectory $relay
       - name: Package
-        shell: powershell
+        shell: pwsh
         run: |
           Compress-Archive -Path dist/GlobalProtectorWiFi.exe,dist/README.md,dist/LICENSE,dist/SHA256SUMS.txt -DestinationPath dist/GlobalProtectorWiFi-portable.zip
           git archive --format=zip --output=dist/GlobalProtectorWiFi-source.zip HEAD
+          if ($LASTEXITCODE -ne 0) { throw 'Source archive creation failed.' }
           Get-ChildItem dist -File | Where-Object Name -ne 'SHA256SUMS.txt' | Get-FileHash -Algorithm SHA256 | ForEach-Object { $_.Hash.ToLower() + '  ' + (Split-Path $_.Path -Leaf) } | Set-Content dist/SHA256SUMS.txt -Encoding ASCII
       - uses: actions/upload-artifact@v4
         with:
@@ -34,7 +38,7 @@ jobs:
           RELEASE_TAG: ${{ github.ref_name }}
         shell: pwsh
         run: |
-          $releaseArgs=@('release','create',$env:RELEASE_TAG,'dist/GlobalProtectorWiFi.exe','dist/GlobalProtectorWiFi-portable.zip','dist/GlobalProtectorWiFi-source.zip','dist/SHA256SUMS.txt','--title',('Global Protector WiFi '+$env:RELEASE_TAG),'--notes-file','docs/RELEASE_NOTES.md')
+          $releaseArgs=@('release','create',$env:RELEASE_TAG,'dist/GlobalProtectorWiFi.exe','dist/GlobalProtectorWiFi-portable.zip','dist/GlobalProtectorWiFi-source.zip','dist/SHA256SUMS.txt','--verify-tag','--title',('Global Protector WiFi '+$env:RELEASE_TAG),'--notes-file','docs/RELEASE_NOTES.md')
           if($env:RELEASE_TAG -match '-'){$releaseArgs+='--prerelease'}else{$releaseArgs+='--latest'}
           & gh @releaseArgs
           if($LASTEXITCODE -ne 0){throw 'GitHub release publication failed.'}

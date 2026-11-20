@@ -6,6 +6,9 @@ function Reset-Fixture {
     $script:FakeVpn=[pscustomobject]@{Name='VPN';InterfaceDescription='PANGP Virtual Ethernet Adapter';ifIndex=3;InterfaceGuid='{11111111-1111-1111-1111-111111111111}';Status='Up'}
     $script:FakeLocal=[pscustomobject]@{Name='WLAN';InterfaceDescription='Wi-Fi';ifIndex=6;InterfaceGuid='wifi-guid';Status='Up';HardwareInterface=$true}
     $script:FakeAddress='10.8.0.2'
+    $script:FakePhysicalDns=@('10.20.0.53','10.20.0.54')
+    $script:DnsProbeResults=@{}
+    $script:DnsProbes=@()
     $script:Routes=@(
         [pscustomobject]@{DestinationPrefix='0.0.0.0/0';NextHop='10.20.0.1';InterfaceIndex=6;RouteMetric=0},
         [pscustomobject]@{DestinationPrefix='0.0.0.0/0';NextHop='0.0.0.0';InterfaceIndex=3;RouteMetric=0},
@@ -18,6 +21,7 @@ function Reset-Fixture {
     $script:Fixture=[pscustomobject]@{
         VpnIndex=3;VpnGuid='{11111111-1111-1111-1111-111111111111}';VpnAddress='10.8.0.2';VpnNextHop='0.0.0.0';LocalIndex=6
         DnsBefore=@($script:FakeDns);Targets=@($script:Target);AddedTargets=@($script:Target)
+        DnsSource='Vpn';PhysicalBaseline=[pscustomobject]@{InterfaceIndex=6;InterfaceGuid='wifi-guid';NextHop='10.20.0.1'}
         DnsRegistryBefore=[pscustomobject]@{NameServerExists=$true;NameServer=$script:RegistryDns}
         RemovedRoutes=@($script:Routes | Where-Object { $_.InterfaceIndex -eq 3 -and $_.DestinationPrefix -in @('0.0.0.0/0','10.8.0.1/32') } | Select-Object DestinationPrefix,NextHop,RouteMetric)
     }
@@ -40,6 +44,7 @@ function Remove-NetRoute {
 }
 function Get-DnsClientServerAddress {
     param([int]$InterfaceIndex,$AddressFamily)
+    if ($InterfaceIndex -eq 6) { [pscustomobject]@{InterfaceIndex=6;ServerAddresses=@($script:FakePhysicalDns)}; return }
     if ($script:FakeVpn.Status -ne 'Up') { throw 'No matching CIM DNS object for disabled VPN adapter.' }
     [pscustomobject]@{InterfaceIndex=$InterfaceIndex;ServerAddresses=@($script:FakeDns)}
 }
@@ -78,6 +83,11 @@ function Find-NetRoute {
     if ($defaults.Count -gt 0) { $defaults[0] }
 }
 function Test-Tcp { param($Address,$Port) return $true }
+function Test-DnsServer {
+    param($Server,$Name)
+    $script:DnsProbes+=($Server+' '+$Name)
+    return [bool]$script:DnsProbeResults[($Server+' '+$Name)]
+}
 function Resolve-DnsName {
     [CmdletBinding()]param($Name,$Type,[switch]$DnsOnly,[switch]$QuickTimeout)
     if ($script:FailResolve) { throw 'Injected resolver failure' }
@@ -168,7 +178,7 @@ Apply-Split $script:Fixture
 $health=Test-ConnectionResult $script:Fixture
 $health.SystemDnsWorking=$false
 $first=Get-HealthDecision $health 0
-Assert (-not $first.Rollback -and $first.Failures -eq 1) 'Transient resolver failure caused immediate rollback.'
+Assert (-not $first.Rollback -and $first.Failures -eq 0) 'Resolver failure counted against working IP connectivity.'
 $health.SystemDnsWorking=$true
 $recovered=Get-HealthDecision $health $first.Failures
 Assert (-not $recovered.Rollback -and $recovered.Failures -eq 0) 'Recovery did not reset consecutive failure count.'
@@ -178,8 +188,14 @@ $health.SystemDnsWorking=$false
 $first=Get-HealthDecision $health 0
 $second=Get-HealthDecision $health $first.Failures
 $third=Get-HealthDecision $health $second.Failures
-Assert (-not $first.Rollback -and -not $second.Rollback -and $third.Rollback) 'Persistent DNS failure did not roll back on the third failure.'
-'PASS: persistent internet/DNS failure still triggers rollback after three checks.'
+Assert (-not $first.Rollback -and -not $second.Rollback -and -not $third.Rollback) 'DNS-only failure rolled back valid routes.'
+$health.InternetTcpReachable=$false
+$first=Get-HealthDecision $health $third.Failures
+$second=Get-HealthDecision $health $first.Failures
+$third=Get-HealthDecision $health $second.Failures
+Assert (-not $first.Rollback -and -not $second.Rollback -and $third.Rollback) 'Persistent IP failure did not roll back on the third failure.'
+$health.InternetTcpReachable=$true
+'PASS: DNS-only failures retain working routes; persistent IP failure still rolls back.'
 
 $health.SystemDnsWorking=$true; $health.RdpPortReachable=$false
 Assert (-not (Get-HealthDecision $health 0).Rollback) 'An offline RDP server caused unrelated internet rollback.'
@@ -264,15 +280,60 @@ Assert (@($script:Routes | Where-Object DestinationPrefix -like '192.0.2.*/32').
 
 Reset-Fixture
 $script:Fixture | Add-Member -NotePropertyName Stage -NotePropertyValue 'restored'
-$script:Fixture | Add-Member -NotePropertyName PhysicalBaseline -NotePropertyValue ([pscustomobject]@{InterfaceIndex=6;InterfaceGuid='wifi-guid';NextHop='10.20.0.1'})
 $script:Fixture | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $script:StatePath -Encoding UTF8
-$script:Resume=$true
 $context=Get-StartContext
-Assert ($context.BaselineRoute.InterfaceIndex -eq 6) 'Fast reconnect lost the validated physical baseline.'
-$script:Resume=$false
+Assert ($context.AlreadyConnected -and $context.BaselineRoute.InterfaceIndex -eq 6 -and $script:Writes.Count -eq 0) 'Connected retry did not reuse the validated physical baseline.'
+$script:FakeLocal.InterfaceGuid='different-guid'
 $blocked=$false; try{$null=Get-StartContext}catch{$blocked=$true}
-Assert $blocked 'A fresh start incorrectly accepted an already connected VPN.'
-'PASS: fast reconnect reuses a verified physical route; fresh starts still require VPN disconnection.'
+Assert ($blocked -and $script:Writes.Count -eq 0) 'Connected retry accepted a different physical adapter.'
+Reset-Fixture
+$script:StatePath=Join-Path $PSScriptRoot ('bin\missing-'+[guid]::NewGuid().ToString('N')+'.json')
+$context=Get-StartContext
+Assert ($context.AlreadyConnected -and $context.BaselineRoute.InterfaceIndex -eq 6) 'First start failed to identify the only physical default route.'
+$script:Routes+=[pscustomobject]@{DestinationPrefix='0.0.0.0/0';NextHop='10.20.0.2';InterfaceIndex=6;RouteMetric=1}
+$blocked=$false; try{$null=Get-StartContext}catch{$blocked=$true}
+Assert ($blocked -and $script:Writes.Count -eq 0) 'First start accepted an ambiguous physical exit.'
+'PASS: a connected retry works with a verified or unique physical route and refuses ambiguous exits.'
+
+Reset-Fixture
+$script:StopPath=Join-Path $PSScriptRoot ('bin\missing-stop-'+[guid]::NewGuid().ToString('N'))
+$script:DnsProbeResults['8.8.8.8 example.org']=$true
+$working=Get-WorkingDns @('127.0.0.1','8.8.8.8') 3 2
+Assert ($working -eq '8.8.8.8' -and $script:DnsProbes.Count -eq 2) 'A first failed query prevented retry or tried a loopback resolver.'
+
+Reset-Fixture
+$script:AllowedDns=''
+$script:Fixture.DnsSource='Pending'
+$script:DnsProbeResults['10.20.0.53 example.com']=$true
+$script:DnsProbeResults['10.20.0.54 example.com']=$true
+$script:Routes+=[pscustomobject]@{DestinationPrefix='10.20.0.53/32';NextHop='0.0.0.0';InterfaceIndex=3;RouteMetric=0}
+Apply-Split $script:Fixture
+New-Item -ItemType Directory -Path (Split-Path $script:StatePath) -Force | Out-Null
+Assert (Set-PhysicalDnsFallback $script:Fixture) 'Expected a working fallback.'
+Assert ($script:Fixture.DnsSource -eq 'Physical' -and ($script:FakeDns -join ',') -eq '10.20.0.54') 'Fallback selected a physical DNS candidate routed via VPN.'
+Assert ($script:DnsProbes -notcontains '10.20.0.53 example.com') 'Fallback probed an address through the wrong adapter.'
+Restore-Split $script:Fixture
+Assert (Test-DnsEquivalent @($script:FakeDns) @($script:Fixture.DnsBefore)) 'Fallback did not preserve the original VPN DNS for recovery.'
+
+Reset-Fixture
+$script:AllowedDns=''
+$script:Fixture.DnsSource='Pending'
+Apply-Split $script:Fixture
+Assert (-not (Set-PhysicalDnsFallback $script:Fixture) -and $script:Writes -notcontains 'dns') 'Unreachable physical DNS was applied.'
+$script:FailResolve=$true
+$result=Test-ConnectionResult $script:Fixture
+Assert ((Get-StartupResult $result) -eq 'DnsPending') 'DNS outage prevented startup despite working IP routing.'
+$result.InternetTcpReachable=$false
+Assert ((Get-StartupResult $result) -eq 'PublicUnreachable') 'A public IP outage was accepted as DNS-only.'
+$result.RdpViaVpn=$false
+Assert ((Get-StartupResult $result) -eq 'RouteMismatch') 'Broken routes were accepted as DNS-only.'
+$script:DnsProbeResults['8.8.8.8 example.com']=$true
+Assert ((Repair-AutomaticDns $script:Fixture) -and $script:Fixture.DnsSource -eq 'Vpn' -and $script:FakeDns[0] -eq '8.8.8.8') 'VPN DNS did not recover without restarting the split.'
+$script:FailResolve=$false
+Assert ((Get-StartupResult (Test-ConnectionResult $script:Fixture)) -eq 'Ready') 'Recovered DNS did not restore ready state.'
+Restore-Split $script:Fixture
+Assert (@($script:Routes | Where-Object {$_.InterfaceIndex -eq 3 -and $_.DestinationPrefix -eq '0.0.0.0/0'}).Count -eq 1) 'Failed fallback could not restore the VPN default route.'
+'PASS: DNS-only outage waits and recovers without a restart, while bad routes or failed public IP checks remain distinct.'
 
 Reset-Fixture
 for($cycle=0;$cycle -lt 3;$cycle++) {
@@ -282,6 +343,58 @@ for($cycle=0;$cycle -lt 3;$cycle++) {
     Assert (@($script:Routes | Where-Object DestinationPrefix -eq '192.0.2.10/32').Count -eq 0) 'Repeated disconnection leaked a host route.'
 }
 'PASS: three connect/disconnect cycles restore without duplicate or leaked routes.'
+
+function Add-ReturnedVpnDefault([string]$NextHop='0.0.0.0') {
+    $script:Routes+=[pscustomobject]@{DestinationPrefix='0.0.0.0/0';NextHop=$NextHop;InterfaceIndex=3;RouteMetric=1}
+}
+function New-RouteRepairFixture {
+    Reset-Fixture
+    Apply-Split $script:Fixture
+    $script:Writes=@()
+    [pscustomobject]@{SeenSince=$null;Repairs=@()}
+}
+$script:RouteClock=[datetime]'2026-01-01'
+function Get-Date { $script:RouteClock }
+try {
+    $guard=New-RouteRepairFixture
+    $script:Routes+=[pscustomobject]@{DestinationPrefix='0.0.0.0/0';NextHop='10.23.0.1';InterfaceIndex=21;RouteMetric=15}
+    Assert ((Sync-VpnDefaultRoute $script:Fixture $guard) -eq 'Clear' -and $script:Writes.Count -eq 0) 'Another VPN default triggered a GlobalProtect route write.'
+    Add-ReturnedVpnDefault
+    Assert ((Sync-VpnDefaultRoute $script:Fixture $guard) -eq 'Waiting' -and $script:Writes.Count -eq 0) 'Single route observation triggered a write.'
+    $script:Routes=@($script:Routes | Where-Object { $_.InterfaceIndex -ne 3 -or $_.DestinationPrefix -ne '0.0.0.0/0' })
+    $script:RouteClock=$script:RouteClock.AddSeconds(3)
+    Assert ((Sync-VpnDefaultRoute $script:Fixture $guard) -eq 'Clear' -and $script:Writes.Count -eq 0) 'Transient GlobalProtect default triggered a write.'
+    Add-ReturnedVpnDefault
+    Assert ((Sync-VpnDefaultRoute $script:Fixture $guard) -eq 'Waiting') 'Transient route consumed the next repair observation.'
+    $script:RouteClock=$script:RouteClock.AddSeconds(3)
+    Assert ((Sync-VpnDefaultRoute $script:Fixture $guard) -eq 'Repaired') 'Reinserted original GlobalProtect default was not repaired.'
+    Assert (($script:Writes -join ',') -eq 'remove 0.0.0.0/0') 'Repair changed DNS or another route.'
+    Assert (@($script:Routes | Where-Object { $_.DestinationPrefix -eq '0.0.0.0/0' -and $_.InterfaceIndex -in @(6,21) }).Count -eq 2) 'Repair touched another adapter.'
+    Assert ((Test-ConnectionResult $script:Fixture).Success) 'Routes did not work after repair.'
+
+    Add-ReturnedVpnDefault
+    Assert ((Sync-VpnDefaultRoute $script:Fixture $guard) -eq 'Waiting') 'Repeated route was not observed.'
+    $script:RouteClock=$script:RouteClock.AddSeconds(3)
+    $blocked=$false; try { $null=Sync-VpnDefaultRoute $script:Fixture $guard } catch { $blocked=$true }
+    Assert ($blocked -and $script:Writes.Count -eq 1) 'Rapid reinstallation fought the VPN client.'
+    Restore-Split $script:Fixture
+    Assert (Test-DnsEquivalent @($script:FakeDns) @($script:Fixture.DnsBefore)) 'Rollback after repair lost original DNS settings.'
+
+    foreach ($changed in @('Gateway','Session','Route','Target')) {
+        $guard=New-RouteRepairFixture
+        if ($changed -eq 'Route') { Add-ReturnedVpnDefault '10.8.0.1' } else { Add-ReturnedVpnDefault }
+        if ($changed -eq 'Gateway') { ($script:Routes | Where-Object InterfaceIndex -eq 6).NextHop='10.20.0.2' }
+        if ($changed -eq 'Session') { $script:FakeAddress='10.8.0.3' }
+        if ($changed -eq 'Target') { $script:Routes=@($script:Routes | Where-Object DestinationPrefix -ne ($script:Target+'/32')) }
+        Assert ((Sync-VpnDefaultRoute $script:Fixture $guard) -eq 'Waiting') 'Route check skipped its initial observation.'
+        $script:RouteClock=$script:RouteClock.AddSeconds(3)
+        $blocked=$false; try { $null=Sync-VpnDefaultRoute $script:Fixture $guard } catch { $blocked=$true }
+        Assert ($blocked -and $script:Writes.Count -eq 0) ('Repair wrote a route after '+$changed+' changed.')
+    }
+    'PASS: route repair absorbs one-off VPN changes, observes brief transitions and protects other adapters, changed sessions and repeated policy reinstallation.'
+} finally {
+    Remove-Item Function:\Get-Date
+}
 
 Reset-Fixture
 $script:WaitRoutes=@($script:Routes)
@@ -306,4 +419,59 @@ try {
 } finally {
     Remove-Item -LiteralPath $script:StopPath -ErrorAction SilentlyContinue
     Remove-Item Function:\Get-Date,Function:\Start-Sleep
+}
+
+$script:ControllerPath=''
+$script:StatePath=Join-Path $PSScriptRoot ('bin\vpn-stop-'+[guid]::NewGuid().ToString('N')+'.json')
+$script:StopEvents=@()
+$script:AutoRequests=0
+function Write-Event { param($Event,$Data) $script:StopEvents+=@($Event) }
+function Start-Process {
+    param($FilePath,$ArgumentList,$WindowStyle,[switch]$PassThru)
+    Assert ($FilePath -eq $script:ControllerPath -and $ArgumentList -eq '--request-vpn-disconnect') 'Unexpected command used to stop the VPN.'
+    $script:AutoRequests++
+    $request=[pscustomobject]@{HasExited=$true}
+    $request|Add-Member -MemberType ScriptMethod -Name Dispose -Value {}
+    return $request
+}
+function Start-Sleep {
+    param($Seconds)
+    if ($script:FakeVpn.Status -eq 'Up') {
+        Assert ($script:Writes.Count -eq 0) 'Cleanup wrote routes or DNS while GlobalProtect was still up.'
+        Assert ($script:AutoRequests -eq 1 -or $script:StopEvents -contains 'VPN_DISCONNECT_MANUAL') 'The tool did not request or surface the need for disconnection.'
+        $script:FakeVpn.Status='Disabled'
+        $script:Routes=@($script:Routes | Where-Object InterfaceIndex -ne 3)
+    }
+}
+try {
+    foreach ($reason in @('Stopped','Fault','Restore','VpnLost')) {
+        Reset-Fixture
+        $script:Fixture | Add-Member -NotePropertyName Stage -NotePropertyValue 'applied'
+        Apply-Split $script:Fixture
+        $script:Writes=@();$script:StopEvents=@()
+        if ($reason -eq 'VpnLost') {
+            $script:FakeVpn.Status='Disabled'
+            $script:Routes=@($script:Routes | Where-Object InterfaceIndex -ne 3)
+        }
+        Complete-VpnSession $reason $script:Fixture $false
+        $downAt=[array]::IndexOf($script:StopEvents,'VPN_DISCONNECTED')
+        $restoredAt=[array]::IndexOf($script:StopEvents,'RESTORED')
+        Assert ($script:Fixture.Stage -eq 'restored' -and $downAt -ge 0 -and $restoredAt -gt $downAt) 'Cleanup did not complete after disconnect.'
+        Assert (($script:StopEvents -contains 'VPN_DISCONNECT_MANUAL') -eq ($reason -ne 'VpnLost')) 'Already disconnected tunnel took the wrong stop path.'
+        Assert ($script:Writes -notcontains 'add 0.0.0.0/0') 'Cleanup put the VPN default route back.'
+    }
+    Reset-Fixture
+    $script:Fixture | Add-Member -NotePropertyName Stage -NotePropertyValue 'applied'
+    Apply-Split $script:Fixture
+    $script:Writes=@();$script:StopEvents=@();$script:ControllerPath=$PSCommandPath
+    Complete-VpnSession 'Stopped' $script:Fixture $false
+    Assert ($script:AutoRequests -eq 1 -and $script:StopEvents -notcontains 'VPN_DISCONNECT_MANUAL' -and $script:Fixture.Stage -eq 'restored') 'Automatic disconnection did not precede successful cleanup.'
+    Reset-Fixture
+    $blocked=$false
+    try { Restore-Split $script:Fixture -OnlyWhenVpnDown } catch { $blocked=$true }
+    Assert ($blocked -and $script:Writes.Count -eq 0) 'A reconnect raced past the cleanup guard.'
+    'PASS: automatic stop, manual stop, engine fault, recovery, and spontaneous drop await VPN disconnection before cleanup; reconnect race is blocked.'
+} finally {
+    Remove-Item Function:\Start-Sleep,Function:\Start-Process
+    Remove-Item -LiteralPath $script:StatePath -ErrorAction SilentlyContinue
 }

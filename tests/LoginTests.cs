@@ -34,6 +34,8 @@ class LoginTests {
         Assert(LoginRules.Decide(true,true,false,1,1,false,false,true)=="manual","Missing submit");
         Assert(LoginRules.Decide(true,true,false,0,0,false,true,true)=="connect","First explicit connect");
         Assert(LoginRules.Decide(true,true,false,0,0,false,true,false)=="wait","Passive reconnect must not click connect");
+        foreach(string name in new[]{"断开连接","断开","Disconnect","Disconnect VPN","中斷連線"})Assert(DisconnectRules.IsDisconnectControl(name),"Expected disconnect action was not recognized");
+        foreach(string name in new[]{"Connect","连接","确定","Cancel","Disable","Disconnect (requires a passcode)","注销",null})Assert(!DisconnectRules.IsDisconnectControl(name),"Unexpected action accepted as disconnect");
         string path=Path.Combine(AppDomain.CurrentDomain.BaseDirectory,"test-profile.dpapi");
         var profile=new LoginProfile {Portal="vpn.example.com",Username="fake-login-user",Password="fake-test-secret-ONLY-12345",Remember=true};
         try{
